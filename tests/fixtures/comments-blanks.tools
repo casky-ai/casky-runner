@@ -1,0 +1,9 @@
+# This fixture tests that comments and blank lines are skipped
+
+# Section A
+
+sh
+
+# Section B
+
+ls

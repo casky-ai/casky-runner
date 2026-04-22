@@ -1,0 +1,5 @@
+# Mock skill — all of these ship in alpine:3 by default
+sh
+ls
+cat
+grep

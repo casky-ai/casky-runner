@@ -73,10 +73,11 @@ ${REPORT_SECTION}"
     TOOLS_FILE="/etc/casky/skills/${SKILL}.tools"
     [[ ! -f "$TOOLS_FILE" ]] && { echo "No .tools manifest for: $SKILL"; exit 1; }
 
+    CONTAINER="${SKILL_LAB_NAME:-skill-lab}"
     PASS=0; FAIL=0
     while IFS= read -r tool; do
       [[ -z "$tool" || "$tool" == \#* ]] && continue
-      if docker exec skill-lab which "$tool" >/dev/null 2>&1; then
+      if docker exec "$CONTAINER" which "$tool" >/dev/null 2>&1; then
         echo "  ✓ $tool"
         ((PASS++))
       else
@@ -87,10 +88,10 @@ ${REPORT_SECTION}"
 
     echo ""
     if [[ $FAIL -gt 0 ]]; then
-      echo "FAIL: $FAIL tool(s) missing from skill-lab"
+      echo "FAIL: $FAIL tool(s) missing from $CONTAINER"
       exit 1
     fi
-    echo "PASS: all $PASS tools present in skill-lab ($SKILL)"
+    echo "PASS: all $PASS tools present in $CONTAINER ($SKILL)"
     ;;
 
   help|*)
@@ -105,5 +106,6 @@ ${REPORT_SECTION}"
     echo "  GOOGLE_API_KEY       for Gemini CLI"
     echo "  CASKY_RUN_ID         link run to Casky platform (optional)"
     echo "  CASKY_TOKEN          sandbox JWT for findings reporting (optional)"
+    echo "  SKILL_LAB_NAME       skill-lab container name (default: skill-lab)"
     ;;
 esac
