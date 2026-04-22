@@ -1,0 +1,15 @@
+# cloud-security.tools
+aws
+az
+gcloud
+kubectl
+terraform
+pacu
+cloudmapper
+ScoutSuite
+prowler
+trivy
+grype
+trufflehog
+cloudsplaining
+enumerate-iam

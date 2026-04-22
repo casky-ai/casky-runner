@@ -1,0 +1,73 @@
+name: Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        skill:
+          - digital-forensics
+          - malware-analysis
+          - network-analysis
+          - web-application-testing
+          - vulnerability-scanning
+          - exploitation
+          - post-exploitation
+          - cloud-security
+          - active-directory-attacks
+          - identity-security
+          - application-security
+          - cryptography
+          - osint
+          - wireless-security
+          - reverse-engineering
+          - mobile-security
+          - red-team-operations
+          - container-security
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build runner image
+        uses: docker/build-push-action@v5
+        with:
+          load: true
+          tags: casky-runner:test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Pull skill-lab image
+        run: |
+          docker pull ghcr.io/casky-ai/box/${{ matrix.skill }}:latest || \
+            echo "Skill-lab image not yet available — skipping verify for ${{ matrix.skill }}"
+
+      - name: Start skill-lab container
+        run: |
+          if docker image inspect ghcr.io/casky-ai/box/${{ matrix.skill }}:latest >/dev/null 2>&1; then
+            docker run -d --name skill-lab \
+              ghcr.io/casky-ai/box/${{ matrix.skill }}:latest
+          else
+            echo "SKIP: no skill-lab image for ${{ matrix.skill }}"
+            echo "SKIP=true" >> $GITHUB_ENV
+          fi
+
+      - name: Run casky verify
+        if: env.SKIP != 'true'
+        run: |
+          docker run --rm \
+            --network host \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            casky-runner:test \
+            casky verify ${{ matrix.skill }}
+
+      - name: Cleanup
+        if: always()
+        run: docker rm -f skill-lab 2>/dev/null || true

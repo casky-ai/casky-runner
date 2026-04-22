@@ -1,0 +1,14 @@
+# application-security.tools
+semgrep
+bandit
+gosec
+brakeman
+retire
+npm
+trivy
+grype
+gitleaks
+trufflehog
+nuclei
+burpsuite
+sqlmap
