@@ -15,8 +15,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get update && apt-get install -y --no-install-recommends docker-ce-cli \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# AI agent CLIs
-RUN npm install -g @anthropic-ai/claude-code @google/gemini-cli
+# AI agent CLIs + force-upgrade transitive deps with known CVEs (minimatch, picomatch, tar)
+RUN npm install -g @anthropic-ai/claude-code @google/gemini-cli \
+    && npm install -g minimatch@latest picomatch@latest tar@latest
 
 # Non-root user
 RUN groupadd --gid 1001 casky \
