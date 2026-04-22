@@ -1,0 +1,8 @@
+# ghcr.io/casky-ai/skills/web-app
+# Key tools: ZAP, nikto, sqlmap, ffuf, httpx, nuclei, wapiti
+nikto
+sqlmap
+ffuf
+httpx
+nuclei
+python3

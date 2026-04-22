@@ -35,20 +35,28 @@ Content-Type: application/json
 }"
     fi
 
+    CONTAINER="${SKILL_LAB_NAME:-skill-lab}"
+
     PROMPT="$(cat "$SKILL_MD_PATH")
 
 ---
 
 ## Your environment
-The skill container is already running in the background.
-Run every tool command via:
-  docker exec skill-lab <command>
+
+Two containers are running on the casky-lab Docker network:
+
+- **Skill container** (${CONTAINER}): holds your security tools — image ghcr.io/casky-ai/skills/$(echo "$SKILL")
+- **Target container** (target): holds the vulnerable application you will attack
+
+Run every tool command through the skill container:
+  docker exec ${CONTAINER} <command>
 
 Examples:
-  docker exec skill-lab nmap -sV target
-  docker exec skill-lab bash -c 'cat /results/output.txt'
+  docker exec ${CONTAINER} nmap -sV target
+  docker exec ${CONTAINER} curl -s http://target
+  docker exec ${CONTAINER} bash -c 'cat /results/output.txt'
 
-Do NOT enter the container interactively.
+Do NOT enter either container interactively.
 ${REPORT_SECTION}"
 
     case "$AGENT" in

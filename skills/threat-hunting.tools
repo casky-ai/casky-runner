@@ -1,0 +1,6 @@
+# ghcr.io/casky-ai/skills/threat-hunting
+# Key tools: chainsaw, hayabusa, sigma-cli, velociraptor
+chainsaw
+hayabusa
+sigma
+velociraptor

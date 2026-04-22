@@ -12,24 +12,24 @@ jobs:
       fail-fast: false
       matrix:
         skill:
-          - digital-forensics
-          - malware-analysis
-          - network-analysis
-          - web-application-testing
-          - vulnerability-scanning
+          - forensics
+          - malware
+          - threat-intel
+          - threat-hunting
+          - network
+          - cloud
+          - web-app
+          - vuln-scan
           - exploitation
-          - post-exploitation
-          - cloud-security
-          - active-directory-attacks
-          - identity-security
-          - application-security
-          - cryptography
+          - post-exploit
+          - incident-response
+          - detection
           - osint
-          - wireless-security
-          - reverse-engineering
-          - mobile-security
-          - red-team-operations
-          - container-security
+          - recon
+          - identity
+          - active-directory
+          - appsec
+          - devsecops
 
     steps:
       - uses: actions/checkout@v4
@@ -40,30 +40,31 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           load: true
+          push: false
           tags: casky-runner:test
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Pull skill-lab image
+      - name: Pull skill image
         run: |
-          docker pull ghcr.io/casky-ai/box/${{ matrix.skill }}:latest || \
-            echo "Skill-lab image not yet available — skipping verify for ${{ matrix.skill }}"
-
-      - name: Start skill-lab container
-        run: |
-          if docker image inspect ghcr.io/casky-ai/box/${{ matrix.skill }}:latest >/dev/null 2>&1; then
-            docker run -d --name skill-lab \
-              ghcr.io/casky-ai/box/${{ matrix.skill }}:latest
+          if docker pull ghcr.io/casky-ai/skills/${{ matrix.skill }}:latest 2>/dev/null; then
+            echo "SKILL_IMAGE_AVAILABLE=true" >> $GITHUB_ENV
           else
-            echo "SKIP: no skill-lab image for ${{ matrix.skill }}"
-            echo "SKIP=true" >> $GITHUB_ENV
+            echo "Skill image ghcr.io/casky-ai/skills/${{ matrix.skill }}:latest not yet available — skipping verify"
+            echo "SKILL_IMAGE_AVAILABLE=false" >> $GITHUB_ENV
           fi
 
+      - name: Start skill container
+        if: env.SKILL_IMAGE_AVAILABLE == 'true'
+        run: |
+          docker run -d --name skill-lab \
+            ghcr.io/casky-ai/skills/${{ matrix.skill }}:latest
+
       - name: Run casky verify
-        if: env.SKIP != 'true'
+        if: env.SKILL_IMAGE_AVAILABLE == 'true'
         run: |
           docker run --rm \
-            --network host \
+            -e SKILL_LAB_NAME=skill-lab \
             -v /var/run/docker.sock:/var/run/docker.sock \
             casky-runner:test \
             casky verify ${{ matrix.skill }}

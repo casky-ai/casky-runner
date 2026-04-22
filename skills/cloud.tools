@@ -1,0 +1,7 @@
+# ghcr.io/casky-ai/skills/cloud
+# Key tools: aws-cli v2, gcloud, azure-cli, prowler, ScoutSuite, pacu
+aws
+gcloud
+az
+prowler
+python3

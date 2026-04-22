@@ -1,0 +1,4 @@
+# ghcr.io/casky-ai/skills/identity
+# Key tools: kerbrute, impacket, ldap3
+kerbrute
+python3

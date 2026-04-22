@@ -1,0 +1,6 @@
+# ghcr.io/casky-ai/skills/vuln-scan
+# Key tools: nuclei, httpx, nmap, nikto
+nuclei
+httpx
+nmap
+nikto

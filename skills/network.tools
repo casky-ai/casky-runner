@@ -1,0 +1,8 @@
+# ghcr.io/casky-ai/skills/network
+# Key tools: tshark, tcpdump, nmap, zeek, scapy, masscan
+tshark
+tcpdump
+nmap
+zeek
+masscan
+python3

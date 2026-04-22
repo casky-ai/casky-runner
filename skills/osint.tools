@@ -1,14 +1,7 @@
-# osint.tools
+# ghcr.io/casky-ai/skills/osint
+# Key tools: theHarvester, maigret, holehe, sherlock
 theHarvester
-maltego
-recon-ng
-amass
-subfinder
-shodan
-curl
-whois
-dig
-nmap
-exiftool
-trufflehog
-gitleaks
+maigret
+holehe
+sherlock
+python3

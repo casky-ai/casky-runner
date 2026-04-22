@@ -1,0 +1,16 @@
+# ghcr.io/casky-ai/skills/forensics
+# Key tools: sleuthkit, volatility3, bulk_extractor, binwalk, exiftool
+fls
+icat
+tsk_recover
+mmls
+blkid
+vol3
+bulk_extractor
+binwalk
+exiftool
+file
+strings
+sha256sum
+md5sum
+xxd

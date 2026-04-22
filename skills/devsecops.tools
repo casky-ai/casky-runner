@@ -1,0 +1,9 @@
+# ghcr.io/casky-ai/skills/devsecops
+# Key tools: trivy, grype, syft, hadolint, checkov, tfsec, dockle
+trivy
+grype
+syft
+hadolint
+checkov
+tfsec
+dockle

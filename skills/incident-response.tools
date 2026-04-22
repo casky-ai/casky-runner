@@ -1,0 +1,4 @@
+# ghcr.io/casky-ai/skills/incident-response
+# Key tools: volatility3, timesketch-api-client
+vol3
+python3

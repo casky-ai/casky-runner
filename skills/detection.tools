@@ -1,0 +1,5 @@
+# ghcr.io/casky-ai/skills/detection
+# Key tools: sigma-cli, pySigma backends, yara
+sigma
+yara
+python3
