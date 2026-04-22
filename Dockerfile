@@ -15,9 +15,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get update && apt-get install -y --no-install-recommends docker-ce-cli \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# AI agent CLIs + force-upgrade transitive deps with known CVEs (minimatch, picomatch, tar)
-RUN npm install -g @anthropic-ai/claude-code @google/gemini-cli \
-    && npm install -g minimatch@latest picomatch@latest tar@latest
+# AI agent CLIs — install via package.json so 'overrides' pins vulnerable
+# transitive deps (minimatch, picomatch, tar) to their patched versions.
+COPY package.json /opt/casky-tools/package.json
+RUN cd /opt/casky-tools \
+    && npm install --omit=dev \
+    && ln -sf /opt/casky-tools/node_modules/.bin/claude /usr/local/bin/claude \
+    && ln -sf /opt/casky-tools/node_modules/.bin/gemini /usr/local/bin/gemini
 
 # Non-root user
 RUN groupadd --gid 1001 casky \

@@ -20,17 +20,29 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build
+      # Always load into the local daemon so Trivy scans THIS build, not a
+      # stale image from GHCR (which would happen on PRs before any push).
+      - name: Build (load locally)
         uses: docker/build-push-action@v5
         with:
-          push: ${{ github.ref == 'refs/heads/main' }}
-          tags: ghcr.io/casky-ai/box/runner:latest
+          load: true
+          push: false
+          tags: casky-runner:ci
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
       - name: Trivy scan
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: ghcr.io/casky-ai/box/runner:latest
+          image-ref: casky-runner:ci
           severity: HIGH,CRITICAL
           exit-code: 1
+        env:
+          TRIVY_DISABLE_VEX_NOTICE: "true"
+
+      # Only push after a clean Trivy scan, on main.
+      - name: Push to GHCR
+        if: github.ref == 'refs/heads/main'
+        run: |
+          docker tag casky-runner:ci ghcr.io/casky-ai/box/runner:latest
+          docker push ghcr.io/casky-ai/box/runner:latest
