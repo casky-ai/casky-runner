@@ -1,8 +1,11 @@
 # ghcr.io/casky-ai/skills/network
-# apt
+# apt — all in /usr/bin
 tshark
+tcpdump
 nmap
-zeek
+suricata
 masscan
-# runtime (scapy, pyshark, dpkt are Python libs)
+tcpflow
+# zeek installs to /opt/zeek/bin/ (not in PATH) — verified via /opt/zeek/bin/zeek
+# runtime
 python3
