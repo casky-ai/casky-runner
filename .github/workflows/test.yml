@@ -57,8 +57,12 @@ jobs:
       - name: Start skill container
         if: env.SKILL_IMAGE_AVAILABLE == 'true'
         run: |
+          # Override CMD with sleep infinity so the container stays alive
+          # long enough for docker exec to run. The skill images use CMD ["bash"]
+          # which exits immediately in detached mode.
           docker run -d --name skill-lab \
-            ghcr.io/casky-ai/skills/${{ matrix.skill }}:latest
+            ghcr.io/casky-ai/skills/${{ matrix.skill }}:latest \
+            sleep infinity
 
       - name: Run casky verify
         if: env.SKILL_IMAGE_AVAILABLE == 'true'
