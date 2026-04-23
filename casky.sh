@@ -97,10 +97,10 @@ Do NOT enter either container interactively.${REPORT_SECTION}"
       [[ -z "$tool" || "$tool" == \#* ]] && continue
       if docker exec "$CONTAINER" which "$tool" >/dev/null 2>&1; then
         echo "  ✓ $tool"
-        ((PASS++))
+        PASS=$((PASS + 1))
       else
         echo "  ✗ $tool — NOT FOUND"
-        ((FAIL++))
+        FAIL=$((FAIL + 1))
       fi
     done < "$TOOLS_FILE"
 
