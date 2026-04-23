@@ -1,5 +1,10 @@
 # ghcr.io/casky-ai/skills/active-directory
-# Key tools: bloodhound-python, impacket, crackmapexec
+# perl script installed from GitHub
+enum4linux
+# apt: ldap-utils, smbclient
+ldapsearch
+smbclient
+# pip: bloodhound (entry_point: bloodhound-python)
 bloodhound-python
-crackmapexec
+# runtime (impacket, ldap3, ldapdomaindump via python3)
 python3

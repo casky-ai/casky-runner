@@ -1,4 +1,5 @@
 # ghcr.io/casky-ai/skills/incident-response
-# Key tools: volatility3, timesketch-api-client
-vol3
+# pip: volatility3==2.7.0 (entry_point: vol)
+vol
+# runtime (timesketch-api-client is a Python lib)
 python3

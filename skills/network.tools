@@ -1,8 +1,8 @@
 # ghcr.io/casky-ai/skills/network
-# Key tools: tshark, tcpdump, nmap, zeek, scapy, masscan
+# apt
 tshark
-tcpdump
 nmap
 zeek
 masscan
+# runtime (scapy, pyshark, dpkt are Python libs)
 python3

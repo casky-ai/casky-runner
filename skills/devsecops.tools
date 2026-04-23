@@ -1,9 +1,12 @@
 # ghcr.io/casky-ai/skills/devsecops
-# Key tools: trivy, grype, syft, hadolint, checkov, tfsec, dockle
+# binary downloads (COPY --from=builder)
 trivy
 grype
 syft
 hadolint
-checkov
 tfsec
 dockle
+# pip: checkov (entry_point: checkov)
+checkov
+# runtime
+python3

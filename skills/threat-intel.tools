@@ -1,4 +1,5 @@
 # ghcr.io/casky-ai/skills/threat-intel
-# Key tools: MISP client, PyOTX, STIX/TAXII, shodan (all Python-based)
-python3
+# pip: shodan CLI
 shodan
+# all other tools (stix2, taxii2, OTXv2, vt-py, pymisp) are Python libraries
+python3

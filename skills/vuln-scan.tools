@@ -1,6 +1,11 @@
 # ghcr.io/casky-ai/skills/vuln-scan
-# Key tools: nuclei, httpx, nmap, nikto
+# go binaries
 nuclei
 httpx
+# apt
 nmap
 nikto
+# pip: gvm-tools (entry_point: gvm-cli)
+gvm-cli
+# runtime
+python3

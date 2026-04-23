@@ -1,7 +1,10 @@
 # ghcr.io/casky-ai/skills/osint
-# Key tools: theHarvester, maigret, holehe, sherlock
-theHarvester
-maigret
+# go binaries
+subfinder
+httpx
+# pip entry_points
+shodan
 holehe
-sherlock
+maigret
+# runtime (theHarvester not properly on PyPI; used via python3)
 python3

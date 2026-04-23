@@ -1,5 +1,5 @@
 # ghcr.io/casky-ai/skills/detection
-# Key tools: sigma-cli, pySigma backends, yara
+# pip: sigma-cli (entry_point: sigma)
 sigma
-yara
+# runtime (yara-python is a Python binding, not the yara apt binary)
 python3

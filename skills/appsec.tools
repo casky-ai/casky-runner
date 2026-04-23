@@ -1,6 +1,12 @@
 # ghcr.io/casky-ai/skills/appsec
-# Key tools: semgrep, gitleaks, trufflehog, sonar-scanner, snyk
-semgrep
+# binary downloads
 gitleaks
 trufflehog
+sonar-scanner
+# npm global
+snyk
+# pip entry_points
+semgrep
+bandit
+# runtime
 python3

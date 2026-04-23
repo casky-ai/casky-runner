@@ -1,7 +1,10 @@
 # ghcr.io/casky-ai/skills/recon
-# Key tools: subfinder, dnsx, httpx, nmap, masscan
+# go binaries
 subfinder
-dnsx
 httpx
+dnsx
+# apt
 nmap
 masscan
+# runtime
+python3

@@ -1,4 +1,7 @@
 # ghcr.io/casky-ai/skills/identity
-# Key tools: kerbrute, impacket, ldap3
+# go binary
 kerbrute
+# pip: ldapdomaindump (entry_point: ldapdomaindump)
+ldapdomaindump
+# runtime (impacket, ldap3 via python3)
 python3

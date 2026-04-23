@@ -1,8 +1,14 @@
 # ghcr.io/casky-ai/skills/web-app
-# Key tools: ZAP, nikto, sqlmap, ffuf, httpx, nuclei, wapiti
+# apt
 nikto
 sqlmap
-ffuf
+# go binaries (COPY --from=gobuilder)
 httpx
 nuclei
+ffuf
+# ZAP (ln -s /opt/zap/zap.sh)
+zaproxy
+# pip: wapiti3 (entry_point: wapiti)
+wapiti
+# runtime
 python3
