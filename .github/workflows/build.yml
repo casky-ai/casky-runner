@@ -37,6 +37,7 @@ jobs:
           image-ref: casky-runner:ci
           severity: HIGH,CRITICAL
           exit-code: 1
+          trivyignores: .trivyignore
         env:
           TRIVY_DISABLE_VEX_NOTICE: "true"
 

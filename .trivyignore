@@ -1,0 +1,24 @@
+# CVE suppressions for casky-runner
+#
+# Policy: suppress only when (a) no fixed version exists in the npm registry yet,
+# and (b) the vulnerable code path is unreachable in this container at runtime.
+# Re-evaluate monthly or when Trivy reports a published fixed version.
+
+# minimatch: ReDoS via crafted glob patterns
+# CVE-2026-27903, CVE-2026-27904 — fixed in 10.2.3 (not yet published to npm)
+# minimatch is used internally by @anthropic-ai/claude-code and @google/gemini-cli
+# for file-system pattern matching. The runner accepts no untrusted glob input.
+CVE-2026-27903
+CVE-2026-27904
+
+# picomatch: ReDoS via crafted extglob patterns
+# CVE-2026-33671 — fixed in 4.0.4 (not yet published to npm)
+# Same usage context as minimatch above.
+CVE-2026-33671
+
+# tar: path traversal via drive-relative linkpath / symlink traversal
+# CVE-2026-29786, CVE-2026-31802 — fixed in 7.5.10/7.5.11 (not yet published to npm)
+# tar is used by npm to extract packages at image build time only.
+# The runner does not extract untrusted archives at runtime.
+CVE-2026-29786
+CVE-2026-31802

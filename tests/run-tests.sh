@@ -168,26 +168,39 @@ expect_fail "run with no args exits 1" \
 expect_output "run no-args shows usage" "Usage:" \
   runner casky run
 
-expect_fail "run unknown skill (no .md) exits 1" \
-  runner casky run does-not-exist
+# Prompt is read from stdin; the runner() function passes stdin through.
+# Empty stdin → no prompt → abort.
+stdin_test_pass() {
+  local name="$1" input="$2"; shift 2
+  local out
+  out="$(echo "$input" | runner "$@" 2>&1)" && { fail "$name (expected non-zero)"; return; }
+  pass "$name"
+}
+stdin_test_output() {
+  local name="$1" input="$2" pattern="$3"; shift 3
+  local out
+  out="$(echo "$input" | runner "$@" 2>&1)" || true
+  if echo "$out" | grep -qF "$pattern"; then pass "$name"
+  else fail "$name — expected: $pattern"; echo "    got: $out" >&2; fi
+}
 
-expect_output "run unknown skill explains it" "Unknown skill" \
-  runner casky run does-not-exist
+stdin_test_pass   "run with empty stdin exits 1" \
+  "" casky run web-app
 
-expect_fail "run without ANTHROPIC_API_KEY exits 1" \
-  runner casky run mock
+stdin_test_pass   "run without ANTHROPIC_API_KEY exits 1" \
+  "test prompt" casky run web-app
 
-expect_output "run without key explains requirement" "ANTHROPIC_API_KEY" \
-  runner casky run mock
+stdin_test_output "run without key explains requirement" \
+  "test prompt" "ANTHROPIC_API_KEY" casky run web-app
 
-expect_fail "run --agent gemini without GOOGLE_API_KEY exits 1" \
-  runner casky run mock --agent gemini
+stdin_test_pass   "run --agent gemini without GOOGLE_API_KEY exits 1" \
+  "test prompt" casky run web-app --agent gemini
 
-expect_output "run gemini without key explains requirement" "GOOGLE_API_KEY" \
-  runner casky run mock --agent gemini
+stdin_test_output "run gemini without key explains requirement" \
+  "test prompt" "GOOGLE_API_KEY" casky run web-app --agent gemini
 
-expect_fail "run with unknown agent exits 1" \
-  runner casky run mock --agent bogus-agent
+stdin_test_pass   "run with unknown agent exits 1" \
+  "test prompt" casky run web-app --agent bogus-agent
 
 # ── 5. CASKY_RUN_ID + CASKY_TOKEN plumbing ───────────────────────────────────
 # Verify the report section appears in the assembled prompt when both are set.

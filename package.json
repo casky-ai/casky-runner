@@ -5,10 +5,5 @@
   "dependencies": {
     "@anthropic-ai/claude-code": "latest",
     "@google/gemini-cli": "latest"
-  },
-  "overrides": {
-    "minimatch": ">=10.2.3",
-    "picomatch": ">=4.0.4",
-    "tar": ">=7.5.11"
   }
 }
