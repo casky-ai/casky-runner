@@ -113,10 +113,10 @@ make verify SKILL=web-app
 ## How it works
 
 1. The runner, skill, and target containers all start on the `casky-lab` Docker network.
-2. `casky run <skill>` reads the skill prompt from `/etc/casky/skills/<skill>.md`, appends the runtime environment context (container names, how to exec), and pipes the combined prompt to Claude Code or Gemini CLI.
+2. `casky run <category>` reads the skill prompt from **stdin** — paste any `SKILL.md` from the [753-skill registry](https://github.com/casky-ai/casky-runner), then press `Ctrl+D`. The runner appends environment context (which containers are running, how to exec into the skill container) and pipes the combined prompt to Claude Code or Gemini CLI.
 3. The AI agent runs tool commands via `docker exec <skill-container> <cmd>` — it never enters either container interactively.
 4. If `CASKY_RUN_ID` and `CASKY_TOKEN` are set, the agent POSTs findings back to the Casky platform API on completion.
-5. `casky verify <skill>` checks every tool listed in `/etc/casky/skills/<skill>.tools` exists in the skill container — used in CI to confirm skill images ship the expected toolchain.
+5. `casky verify <category>` checks every tool listed in `/etc/casky/skills/<category>.tools` exists in the skill container — used in CI to confirm skill images ship the expected toolchain.
 
 ## CI
 
