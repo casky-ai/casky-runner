@@ -34,44 +34,45 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: docker/setup-buildx-action@v3
-
-      - name: Build runner image
-        uses: docker/build-push-action@v5
-        with:
-          load: true
-          push: false
-          tags: casky-runner:test
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
       - name: Pull skill image
         run: |
           if docker pull ghcr.io/casky-ai/skills/${{ matrix.skill }}:latest 2>/dev/null; then
             echo "SKILL_IMAGE_AVAILABLE=true" >> $GITHUB_ENV
           else
-            echo "Skill image ghcr.io/casky-ai/skills/${{ matrix.skill }}:latest not yet available — skipping verify"
+            echo "Skill image not yet published — skipping"
             echo "SKILL_IMAGE_AVAILABLE=false" >> $GITHUB_ENV
           fi
 
       - name: Start skill container
         if: env.SKILL_IMAGE_AVAILABLE == 'true'
         run: |
-          # Override CMD with sleep infinity so the container stays alive
-          # long enough for docker exec to run. The skill images use CMD ["bash"]
-          # which exits immediately in detached mode.
           docker run -d --name skill-lab \
             ghcr.io/casky-ai/skills/${{ matrix.skill }}:latest \
             sleep infinity
 
-      - name: Run casky verify
+      # Verify runs directly on the GHA host (not inside the runner container)
+      # so it has native access to /var/run/docker.sock without permission issues.
+      - name: Verify skill tools
         if: env.SKILL_IMAGE_AVAILABLE == 'true'
         run: |
-          docker run --rm \
-            -e SKILL_LAB_NAME=skill-lab \
-            -v /var/run/docker.sock:/var/run/docker.sock \
-            casky-runner:test \
-            casky verify ${{ matrix.skill }}
+          SKILL="${{ matrix.skill }}"
+          PASS=0; FAIL=0
+          while IFS= read -r tool; do
+            [[ -z "$tool" || "$tool" == \#* ]] && continue
+            if docker exec skill-lab which "$tool" > /dev/null 2>&1; then
+              echo "  ✓ $tool"
+              PASS=$((PASS + 1))
+            else
+              echo "  ✗ $tool — NOT FOUND"
+              FAIL=$((FAIL + 1))
+            fi
+          done < "skills/${SKILL}.tools"
+          echo ""
+          if [[ $FAIL -gt 0 ]]; then
+            echo "FAIL: $FAIL tool(s) missing from skill-lab"
+            exit 1
+          fi
+          echo "PASS: all $PASS tools present in skill-lab (${SKILL})"
 
       - name: Cleanup
         if: always()

@@ -1,6 +1,6 @@
 LOCAL_IMAGE  ?= casky-runner:dev
 REMOTE_IMAGE ?= ghcr.io/casky-ai/box/runner:latest
-SKILL        ?= web-application-testing
+SKILL        ?= web-app
 AGENT        ?= claude
 
 .DEFAULT_GOAL := help
@@ -45,11 +45,22 @@ run: build ## Run a skill  (SKILL=web-application-testing AGENT=claude)
 	  $(LOCAL_IMAGE) \
 	  casky run $(SKILL) --agent $(AGENT)
 
-verify: build ## Verify skill-lab has required tools  (SKILL=web-application-testing)
-	docker run --rm \
-	  -v /var/run/docker.sock:/var/run/docker.sock \
-	  $(LOCAL_IMAGE) \
-	  casky verify $(SKILL)
+verify: ## Verify skill-lab has required tools  (SKILL=web-app)
+	@PASS=0; FAIL=0; \
+	while IFS= read -r tool; do \
+	  [ -z "$$tool" ] && continue; \
+	  case "$$tool" in \#*) continue ;; esac; \
+	  if docker exec skill-lab which "$$tool" > /dev/null 2>&1; then \
+	    echo "  ✓ $$tool"; PASS=$$((PASS + 1)); \
+	  else \
+	    echo "  ✗ $$tool — NOT FOUND"; FAIL=$$((FAIL + 1)); \
+	  fi; \
+	done < "skills/$(SKILL).tools"; \
+	echo ""; \
+	if [ "$$FAIL" -gt 0 ]; then \
+	  echo "FAIL: $$FAIL tool(s) missing from skill-lab"; exit 1; \
+	fi; \
+	echo "PASS: all $$PASS tools present in skill-lab ($(SKILL))"
 
 push: build ## Tag and push to GHCR
 	docker tag $(LOCAL_IMAGE) $(REMOTE_IMAGE)
