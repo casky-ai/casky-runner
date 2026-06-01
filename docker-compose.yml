@@ -1,0 +1,121 @@
+name: casky-box
+
+services:
+
+  # ── AI runner ────────────────────────────────────────────────────────────────
+  # Claude Code + Gemini CLI. Runs sleep infinity; exec into it to run skills.
+  # Usage: docker exec -it casky-box-runner-1 casky run web-app
+  runner:
+    image: ghcr.io/casky-ai/box/runner:latest
+    container_name: casky-runner
+    restart: unless-stopped
+    environment:
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+      CASKY_RUN_ID: ${CASKY_RUN_ID:-}
+      CASKY_TOKEN: ${CASKY_TOKEN:-}
+      CASKY_APP_URL: ${CASKY_APP_URL:-https://app.casky.ai}
+      SKILL_LAB_NAME: ${SKILL_LAB_NAME:-skill-lab}
+      MCP_SERVER_URL: http://mcp:8080
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      - mcp
+    networks:
+      - casky-internal
+
+  # ── CVE MCP Server ───────────────────────────────────────────────────────────
+  # Exposes 21 threat-intel APIs (NVD, EPSS, CISA KEV, Shodan, VirusTotal…)
+  # as MCP tools. casky-runner auto-registers this at startup.
+  # Only NVD + EPSS + CISA KEV are used without API keys (free, no config needed).
+  mcp:
+    image: ghcr.io/casky-ai/box/mcp:latest
+    container_name: casky-mcp
+    restart: unless-stopped
+    environment:
+      MCP_PORT: "8080"
+      # Optional — add paid keys for fuller coverage:
+      NVD_API_KEY: ${NVD_API_KEY:-}
+      SHODAN_KEY: ${SHODAN_KEY:-}
+      VIRUSTOTAL_KEY: ${VIRUSTOTAL_KEY:-}
+      GREYNOISE_API_KEY: ${GREYNOISE_API_KEY:-}
+    ports:
+      - "8080:8080"
+    networks:
+      - casky-internal
+
+  # ── Local findings database ──────────────────────────────────────────────────
+  db:
+    image: postgres:16-alpine
+    container_name: casky-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: casky
+      POSTGRES_USER: casky
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-casky}
+    volumes:
+      - casky-db-data:/var/lib/postgresql/data
+    networks:
+      - casky-internal
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U casky"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Local findings dashboard ─────────────────────────────────────────────────
+  # Browse findings at http://localhost:3000
+  ui:
+    image: ghcr.io/casky-ai/box/ui:latest
+    container_name: casky-ui
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://casky:${DB_PASSWORD:-casky}@db:5432/casky
+      NEXT_PUBLIC_APP_URL: http://localhost:3000
+    ports:
+      - "3000:3000"
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - casky-internal
+
+  # ── Lab profile — only starts with: docker compose --profile lab up ──────────
+
+  # Skill container: security tools pre-installed (nmap, nuclei, ZAP, etc.)
+  # Override image with: SKILL_IMAGE=ghcr.io/casky-ai/skills/network:latest
+  skill-lab:
+    profiles: [lab]
+    image: ${SKILL_IMAGE:-ghcr.io/casky-ai/skills/web-app:latest}
+    container_name: skill-lab
+    restart: unless-stopped
+    networks:
+      - casky-lab
+    # No internet access for the skill container — it scans the target only
+    dns: []
+
+  # Target container: vulnerable app to practice against
+  # Override image with: TARGET_IMAGE=ghcr.io/casky-ai/targets/juice-shop:latest
+  target:
+    profiles: [lab]
+    image: ${TARGET_IMAGE:-ghcr.io/casky-ai/targets/dvwa:latest}
+    container_name: casky-target
+    restart: unless-stopped
+    networks:
+      - casky-lab
+    # No internet access for the target container
+    dns: []
+
+networks:
+  # Internal network for platform services
+  casky-internal:
+    driver: bridge
+
+  # Isolated network for skill + target containers (no internet)
+  casky-lab:
+    name: casky-lab
+    driver: bridge
+    internal: true
+
+volumes:
+  casky-db-data:

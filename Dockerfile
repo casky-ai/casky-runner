@@ -27,13 +27,15 @@ RUN cd /opt/casky-tools \
 RUN groupadd --gid 1001 casky \
     && useradd --uid 1001 --gid casky --shell /bin/bash --create-home casky
 
-# casky wrapper + skill tool manifests
+# casky wrapper + skill tool manifests + MCP entrypoint
 COPY casky.sh /usr/local/bin/casky
-RUN chmod +x /usr/local/bin/casky
+COPY entrypoint.sh /usr/local/bin/casky-entrypoint
+RUN chmod +x /usr/local/bin/casky /usr/local/bin/casky-entrypoint
 COPY skills/ /etc/casky/skills/
 
 USER casky
 WORKDIR /home/casky
+ENTRYPOINT ["casky-entrypoint"]
 CMD ["sleep", "infinity"]
 
 LABEL org.opencontainers.image.source="https://github.com/casky-ai/casky-runner"
