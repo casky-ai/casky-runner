@@ -15,10 +15,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get update && apt-get install -y --no-install-recommends docker-ce-cli \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# CVE MCP Server — installed here so Claude Code can start it via stdio (no separate container)
-# Env vars (NVD_API_KEY, SHODAN_KEY, etc.) are passed in docker-compose.yml and inherited by the subprocess.
-RUN pip3 install --no-cache-dir --break-system-packages \
-    "git+https://github.com/mukul975/cve-mcp-server.git"
+# CVE MCP Server — installed in a venv to avoid pip version constraints on Ubuntu 22.04
+# (Ubuntu 22.04 ships pip 22 which doesn't support --break-system-packages)
+RUN python3 -m venv /opt/cve-mcp \
+    && /opt/cve-mcp/bin/pip install --no-cache-dir \
+       "git+https://github.com/mukul975/cve-mcp-server.git"
 
 # AI agent CLIs — install via package.json so 'overrides' pins vulnerable
 # transitive deps (minimatch, picomatch, tar) to their patched versions.

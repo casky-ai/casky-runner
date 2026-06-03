@@ -9,12 +9,12 @@ cat > "${HOME}/.claude/claude_desktop_config.json" <<'EOF'
 {
   "mcpServers": {
     "casky-cve": {
-      "command": "python3",
+      "command": "/opt/cve-mcp/bin/python3",
       "args": ["-m", "cve_mcp.server"]
     }
   }
 }
 EOF
-echo "[casky] CVE MCP registered (stdio · python3 -m cve_mcp.server)"
+echo "[casky] CVE MCP registered (stdio · /opt/cve-mcp/bin/python3 -m cve_mcp.server)"
 
 exec "$@"

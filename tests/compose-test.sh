@@ -149,17 +149,17 @@ else
   echo "    got: $MCP_CONFIG"
 fi
 
-if echo "$MCP_CONFIG" | grep -q '"command": "python3"'; then
-  pass "MCP server uses stdio transport (python3 command)"
+if echo "$MCP_CONFIG" | grep -q '"/opt/cve-mcp/bin/python3"'; then
+  pass "MCP server uses stdio transport (venv python3 command)"
 else
-  fail "MCP server not configured for stdio transport"
+  fail "MCP server not configured for stdio transport via venv"
 fi
 
-# Verify the cve_mcp module is importable (installed correctly)
-if exec_runner python3 -c "import cve_mcp.server" &>/dev/null; then
-  pass "cve_mcp.server module is importable"
+# Verify the cve_mcp module is importable via the venv Python
+if exec_runner /opt/cve-mcp/bin/python3 -c "import cve_mcp.server" &>/dev/null; then
+  pass "cve_mcp.server module is importable via venv"
 else
-  fail "cve_mcp.server module not found — pip install may have failed"
+  fail "cve_mcp.server module not found — venv pip install may have failed"
 fi
 
 # ── runner: docker socket access ──────────────────────────────────────────────
