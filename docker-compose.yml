@@ -16,31 +16,19 @@ services:
       CASKY_TOKEN: ${CASKY_TOKEN:-}
       CASKY_APP_URL: ${CASKY_APP_URL:-https://app.casky.ai}
       SKILL_LAB_NAME: ${SKILL_LAB_NAME:-skill-lab}
-      MCP_SERVER_URL: http://mcp:8080
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-    depends_on:
-      - mcp
-    networks:
-      - casky-internal
-
-  # ── CVE MCP Server ───────────────────────────────────────────────────────────
-  # Exposes 21 threat-intel APIs (NVD, EPSS, CISA KEV, Shodan, VirusTotal…)
-  # as MCP tools. casky-runner auto-registers this at startup.
-  # Only NVD + EPSS + CISA KEV are used without API keys (free, no config needed).
-  mcp:
-    image: ghcr.io/casky-ai/box/mcp:latest
-    container_name: casky-mcp
-    restart: unless-stopped
-    environment:
-      MCP_PORT: "8080"
-      # Optional — add paid keys for fuller coverage:
+      # CVE MCP Server API keys — inherited by the cve_mcp.server subprocess.
+      # Only NVD + EPSS + CISA KEV are used without keys (free, no config needed).
       NVD_API_KEY: ${NVD_API_KEY:-}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
       SHODAN_KEY: ${SHODAN_KEY:-}
       VIRUSTOTAL_KEY: ${VIRUSTOTAL_KEY:-}
       GREYNOISE_API_KEY: ${GREYNOISE_API_KEY:-}
-    ports:
-      - "8080:8080"
+      ABUSEIPDB_KEY: ${ABUSEIPDB_KEY:-}
+      URLSCAN_KEY: ${URLSCAN_KEY:-}
+      CIRCL_PDNS_USER: ${CIRCL_PDNS_USER:-}
+      CIRCL_PDNS_PASS: ${CIRCL_PDNS_PASS:-}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
     networks:
       - casky-internal
 

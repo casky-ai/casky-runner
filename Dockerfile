@@ -4,7 +4,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 # System deps + Docker CLI (no daemon) + Node.js LTS
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl ca-certificates gnupg lsb-release jq git \
+    curl ca-certificates gnupg lsb-release jq git python3 python3-pip \
     && curl -fsSL https://deb.nodesource.com/setup_lts.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
@@ -14,6 +14,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
        > /etc/apt/sources.list.d/docker.list \
     && apt-get update && apt-get install -y --no-install-recommends docker-ce-cli \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# CVE MCP Server — installed here so Claude Code can start it via stdio (no separate container)
+# Env vars (NVD_API_KEY, SHODAN_KEY, etc.) are passed in docker-compose.yml and inherited by the subprocess.
+RUN pip3 install --no-cache-dir --break-system-packages \
+    "git+https://github.com/mukul975/cve-mcp-server.git"
 
 # AI agent CLIs — install via package.json so 'overrides' pins vulnerable
 # transitive deps (minimatch, picomatch, tar) to their patched versions.

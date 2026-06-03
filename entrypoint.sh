@@ -1,22 +1,20 @@
 #!/bin/bash
 set -e
 
-# Auto-register the CVE MCP server in Claude Code's config if MCP_SERVER_URL is set.
-# This runs once at container startup so every subsequent `claude` invocation
-# inside the container already has threat-intel tools available.
-if [ -n "${MCP_SERVER_URL}" ]; then
-  mkdir -p "${HOME}/.claude"
-  cat > "${HOME}/.claude/claude_desktop_config.json" <<EOF
+# Register the CVE MCP server with Claude Code at container startup.
+# Claude Code will launch it as a subprocess (stdio transport) on first use.
+# All API keys (NVD_API_KEY, SHODAN_KEY, etc.) are inherited from the container environment.
+mkdir -p "${HOME}/.claude"
+cat > "${HOME}/.claude/claude_desktop_config.json" <<'EOF'
 {
   "mcpServers": {
     "casky-cve": {
-      "type": "sse",
-      "url": "${MCP_SERVER_URL}/sse"
+      "command": "python3",
+      "args": ["-m", "cve_mcp.server"]
     }
   }
 }
 EOF
-  echo "[casky] CVE MCP registered at ${MCP_SERVER_URL}"
-fi
+echo "[casky] CVE MCP registered (stdio · python3 -m cve_mcp.server)"
 
 exec "$@"

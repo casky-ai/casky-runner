@@ -1,3 +1,9 @@
+# NOTE: This Dockerfile is NOT used in the current Casky Box setup.
+# The CVE MCP server is installed directly inside the casky-runner image
+# and launched via stdio by Claude Code (no separate container needed).
+# The cve-mcp-server only supports stdio transport; SSE is roadmap-only.
+# Kept here as a reference for a future standalone mcp.casky.ai deployment.
+
 FROM python:3.12-slim-bookworm
 
 ENV DEBIAN_FRONTEND=noninteractive \
