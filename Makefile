@@ -5,7 +5,7 @@ AGENT        ?= claude
 
 .DEFAULT_GOAL := help
 
-.PHONY: help build scan lint test shell run verify push clean
+.PHONY: help build scan lint test test-compose test-compose-lab shell run verify push clean
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?##' $(MAKEFILE_LIST) \
@@ -26,8 +26,14 @@ lint: ## Shellcheck casky.sh (requires Docker)
 	  -v "$(CURDIR):/mnt:ro" \
 	  koalaman/shellcheck:stable /mnt/casky.sh
 
-test: build ## Run the full test harness
+test: build ## Run the full test harness (image-only, no compose)
 	./tests/run-tests.sh $(LOCAL_IMAGE)
+
+test-compose: ## Test the full docker-compose stack using .env.local
+	./tests/compose-test.sh
+
+test-compose-lab: ## Test compose stack + lab profile (skill-lab + target)
+	./tests/compose-test.sh --lab
 
 shell: build ## Open a bash shell inside the runner
 	docker run --rm -it \
