@@ -3,8 +3,9 @@ name: casky-box
 services:
 
   # ── AI runner ────────────────────────────────────────────────────────────────
-  # Claude Code + Gemini CLI. Runs sleep infinity; exec into it to run skills.
-  # Usage: docker exec -it casky-box-runner-1 casky run web-app
+  # Claude Code + Gemini CLI + agentic harness.
+  # Usage (single skill):   docker exec -it casky-runner casky run web-app
+  # Usage (full harness):   docker exec -it casky-runner casky harness
   runner:
     image: ghcr.io/casky-ai/box/runner:latest
     container_name: casky-runner
@@ -12,9 +13,14 @@ services:
     environment:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
       GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+      # Platform sync — set CASKY_API_KEY to enable platform mode in the harness.
+      # Leave empty to run in local mode (findings stored in /var/casky/reports/).
+      CASKY_API_KEY: ${CASKY_API_KEY:-}
+      CASKY_APP_URL: ${CASKY_APP_URL:-https://app.casky.ai}
+      CASKY_LOCAL_PORT: ${CASKY_LOCAL_PORT:-8765}
+      # Legacy single-run env vars — still work for: casky run <skill>
       CASKY_RUN_ID: ${CASKY_RUN_ID:-}
       CASKY_TOKEN: ${CASKY_TOKEN:-}
-      CASKY_APP_URL: ${CASKY_APP_URL:-https://app.casky.ai}
       SKILL_LAB_NAME: ${SKILL_LAB_NAME:-skill-lab}
       # CVE MCP Server API keys — inherited by the cve_mcp.server subprocess.
       # Only NVD + EPSS + CISA KEV are used without keys (free, no config needed).
@@ -27,10 +33,19 @@ services:
       URLSCAN_KEY: ${URLSCAN_KEY:-}
       CIRCL_PDNS_USER: ${CIRCL_PDNS_USER:-}
       CIRCL_PDNS_PASS: ${CIRCL_PDNS_PASS:-}
+    ports:
+      - "${CASKY_LOCAL_PORT:-8765}:8765"   # local report server (harness local mode)
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+      - casky-reports:/var/casky/reports    # persist findings between runs
     networks:
       - casky-internal
+    healthcheck:
+      test: ["CMD", "casky", "help"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
 
   # ── Local findings database ──────────────────────────────────────────────────
   db:
@@ -51,27 +66,10 @@ services:
       timeout: 5s
       retries: 5
 
-  # ── Local findings dashboard ─────────────────────────────────────────────────
-  # Browse findings at http://localhost:3000
-  ui:
-    image: ghcr.io/casky-ai/box/ui:latest
-    container_name: casky-ui
-    restart: unless-stopped
-    environment:
-      DATABASE_URL: postgresql://casky:${DB_PASSWORD:-casky}@db:5432/casky
-      NEXT_PUBLIC_APP_URL: http://localhost:3000
-    ports:
-      - "3000:3000"
-    depends_on:
-      db:
-        condition: service_healthy
-    networks:
-      - casky-internal
-
   # ── Lab profile — only starts with: docker compose --profile lab up ──────────
 
-  # Skill container: security tools pre-installed (nmap, nuclei, ZAP, etc.)
-  # Override image with: SKILL_IMAGE=ghcr.io/casky-ai/skills/network:latest
+  # Skill container: security tools pre-installed (nmap, nuclei, ZAP, ScoutSuite, etc.)
+  # Override image with: SKILL_IMAGE=ghcr.io/casky-ai/skills/cloud:latest
   skill-lab:
     profiles: [lab]
     image: ${SKILL_IMAGE:-ghcr.io/casky-ai/skills/web-app:latest}
@@ -107,3 +105,4 @@ networks:
 
 volumes:
   casky-db-data:
+  casky-reports:    # persistent findings storage for local mode

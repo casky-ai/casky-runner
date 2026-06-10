@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Casky Box — docker-compose integration test
 #
-# Tests the full stack (runner + db + ui) and optionally the lab profile.
+# Tests the full stack (runner + db) and optionally the lab profile.
 # Reads credentials from .env.local (copy .env.example → .env.local first).
 #
 # Usage:
@@ -102,12 +102,6 @@ else
   fail "casky-db container did not start"
 fi
 
-if $COMPOSE ps | grep -q "casky-ui"; then
-  pass "casky-ui container is up"
-else
-  fail "casky-ui container did not start"
-fi
-
 # ── runner: binary checks ─────────────────────────────────────────────────────
 section "Runner — binaries"
 
@@ -189,25 +183,6 @@ else
   fail "runner cannot reach db:5432"
 fi
 
-# ── UI: HTTP health ────────────────────────────────────────────────────────────
-section "UI — HTTP health"
-
-# Retry up to 15s for Next.js to be ready
-UI_OK=false
-for i in $(seq 1 15); do
-  STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/ 2>/dev/null || echo "000")
-  if [[ "$STATUS" == "200" || "$STATUS" == "307" || "$STATUS" == "302" ]]; then
-    UI_OK=true; break
-  fi
-  sleep 1
-done
-
-if $UI_OK; then
-  pass "UI responds on http://localhost:3000 (HTTP $STATUS)"
-else
-  fail "UI did not respond on http://localhost:3000 after 15s (last status: $STATUS)"
-fi
-
 # ── runner: casky CLI smoke test ──────────────────────────────────────────────
 section "Runner — casky CLI smoke test"
 
@@ -219,16 +194,37 @@ else
   fail "casky help output missing 'run' — output: $HELP_OUT"
 fi
 
+if echo "$HELP_OUT" | grep -q "casky harness"; then
+  pass "casky help lists 'harness' command"
+else
+  fail "casky help output missing 'harness' — output: $HELP_OUT"
+fi
+
 if echo "$HELP_OUT" | grep -q "ANTHROPIC_API_KEY"; then
   pass "casky help mentions ANTHROPIC_API_KEY"
 else
   fail "casky help does not mention ANTHROPIC_API_KEY"
 fi
 
-if echo "$HELP_OUT" | grep -q "CASKY_TOKEN"; then
-  pass "casky help mentions CASKY_TOKEN"
+if echo "$HELP_OUT" | grep -q "CASKY_API_KEY"; then
+  pass "casky help mentions CASKY_API_KEY"
 else
-  fail "casky help does not mention CASKY_TOKEN"
+  fail "casky help does not mention CASKY_API_KEY"
+fi
+
+# ── runner: harness binary checks ────────────────────────────────────────────
+section "Runner — harness prerequisites"
+
+if exec_runner /opt/casky-console/bin/python3 -c "import rich, requests" &>/dev/null; then
+  pass "rich and requests are importable from harness venv"
+else
+  fail "rich or requests missing from /opt/casky-console venv"
+fi
+
+if exec_runner test -f /usr/local/bin/casky-harness &>/dev/null; then
+  pass "casky-harness script is installed"
+else
+  fail "casky-harness script not found at /usr/local/bin/casky-harness"
 fi
 
 # ── runner: API key plumbing ──────────────────────────────────────────────────

@@ -112,12 +112,29 @@ Do NOT enter either container interactively.${REPORT_SECTION}"
     echo "PASS: all $PASS tools present in $CONTAINER ($CATEGORY)"
     ;;
 
+  harness)
+    # casky harness
+    #
+    # Launches the agentic harness — fetches an investigation plan from casky.ai
+    # (platform mode) or from ~/.casky/plans/ (local mode), then runs all steps
+    # as parallel Claude + CVE MCP + skill-tool agents.
+    #
+    # Platform mode: set CASKY_API_KEY (generate at app.casky.ai/profile → Runner Token)
+    # Local mode:    leave CASKY_API_KEY empty; findings saved to /var/casky/reports/
+    exec /opt/casky-console/bin/python3 /usr/local/bin/casky-harness
+    ;;
+
   help|*)
-    echo "casky — Casky skill runner"
+    echo "casky — Casky skill runner + agentic harness"
     echo ""
     echo "Commands:"
+    echo "  casky harness"
+    echo "      Launch the agentic harness. Fetches your investigation plan from"
+    echo "      casky.ai and runs all steps in parallel as Claude + CVE MCP agents."
+    echo "      Platform mode: set CASKY_API_KEY. Local mode: leave it empty."
+    echo ""
     echo "  casky run <category> [--agent claude|gemini]"
-    echo "      Run a skill exercise. <category> is the skill image category"
+    echo "      Run a single skill. <category> is the skill image category"
     echo "      (web-app, forensics, network, …). Paste the SKILL.md prompt on stdin."
     echo ""
     echo "  casky verify <category>"
@@ -129,10 +146,13 @@ Do NOT enter either container interactively.${REPORT_SECTION}"
     echo "  detection  osint  recon  identity  active-directory  appsec  devsecops"
     echo ""
     echo "Env vars:"
-    echo "  ANTHROPIC_API_KEY    for Claude Code"
-    echo "  GOOGLE_API_KEY       for Gemini CLI"
+    echo "  ANTHROPIC_API_KEY    for Claude Code (required)"
+    echo "  CASKY_API_KEY        Casky Runner Token — enables platform mode in harness"
+    echo "  CASKY_APP_URL        platform URL (default: https://app.casky.ai)"
+    echo "  CASKY_LOCAL_PORT     local report server port (default: 8765)"
+    echo "  GOOGLE_API_KEY       for Gemini CLI (optional)"
     echo "  SKILL_LAB_NAME       skill container name (default: skill-lab)"
-    echo "  CASKY_RUN_ID         link run to Casky platform (optional)"
-    echo "  CASKY_TOKEN          sandbox JWT for findings reporting (optional)"
+    echo "  CASKY_RUN_ID         single-run platform link (optional, for casky run)"
+    echo "  CASKY_TOKEN          single-run sandbox JWT (optional, for casky run)"
     ;;
 esac

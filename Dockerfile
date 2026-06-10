@@ -33,10 +33,18 @@ RUN cd /opt/casky-tools \
 RUN groupadd --gid 1001 casky \
     && useradd --uid 1001 --gid casky --shell /bin/bash --create-home casky
 
-# casky wrapper + skill tool manifests + MCP entrypoint
+# Agentic harness — Python venv with rich + requests for the terminal UI
+RUN python3 -m venv /opt/casky-console \
+    && /opt/casky-console/bin/pip install --no-cache-dir rich requests
+
+# Report output directory (persisted via volume mount in docker-compose)
+RUN mkdir -p /var/casky/reports && chmod 777 /var/casky/reports
+
+# casky wrapper + harness + skill tool manifests + MCP entrypoint
 COPY casky.sh /usr/local/bin/casky
+COPY harness.py /usr/local/bin/casky-harness
 COPY entrypoint.sh /usr/local/bin/casky-entrypoint
-RUN chmod +x /usr/local/bin/casky /usr/local/bin/casky-entrypoint
+RUN chmod +x /usr/local/bin/casky /usr/local/bin/casky-harness /usr/local/bin/casky-entrypoint
 COPY skills/ /etc/casky/skills/
 
 USER casky
