@@ -1,19 +1,46 @@
 # casky-runner
 
-The AI runner image for the [Casky](https://casky.ai) platform. Ships Claude Code and Gemini CLI in a minimal Ubuntu container. Drives security exercises by issuing commands into a skill container via `docker exec`, against a target container on the same isolated Docker network.
+The AI runner image for the [Casky](https://casky.ai) platform. Ships Claude Code and Gemini CLI in a minimal Ubuntu container. Drives security exercises and investigations by issuing commands into a skill container via `docker exec`, against a target container on the same isolated Docker network.
+
+**Last Updated:** 2026-06-11  
+**Part of:** Casky v1.1 (May 31 – Jul 9, 2026)
 
 ```
-Docker host (your laptop or CI runner)
-│
-├── casky-lab  ─── isolated bridge network
-│   ├── skill container    ghcr.io/casky-ai/skills/<name>:latest   ← security tools
-│   └── target container   ghcr.io/casky-ai/targets/<name>:latest  ← vulnerable app
-│
-└── casky-runner           ghcr.io/casky-ai/box/runner:latest
-        │  has Claude Code + Gemini CLI
-        │  reaches skill container via Docker socket (docker exec)
-        └──► POSTs findings to Casky platform over internet
+┌────────────────────────────────────────────────────────────────────┐
+│  Casky Platform (casky.ai)                                         │
+│  ├─ Evidence-first investigation entry point (/investigate)        │
+│  ├─ Context Graph assembly (CVE Watch, Playbooks, History)        │
+│  ├─ Investigation Plan generation + review                        │
+│  └─ CISO report synthesis                                         │
+└────┬────────────────────────────────────────────────────────────────┘
+     │ Triggers skilled runs (Evidence mode)
+     │
+┌────┴────────────────────────────────────────────────────────────────┐
+│  Casky Box: Local Execution (casky-runner + docker-compose)        │
+│                                                                    │
+│  Docker host (your laptop or CI runner)                           │
+│  │                                                                │
+│  ├── casky-lab ─── isolated bridge network                        │
+│  │   ├── casky-runner (Claude Code + Gemini)                     │
+│  │   ├── casky-mcp (CVE MCP server)                              │
+│  │   ├── skill container ghcr.io/casky-ai/skills/<name>:latest  │
+│  │   └── target container ghcr.io/casky-ai/targets/<name>:latest│
+│  │                                                                │
+│  └── docker exec ──► findings JSON ──► /api/runs/[id]/report    │
+└────────────────────────────────────────────────────────────────────┘
 ```
+
+## What is Casky?
+
+Casky is a **structured security investigation platform**. Unlike traditional AI chat windows, Casky:
+
+1. **Takes raw evidence** — CloudTrail logs, PCAP captures, SIEM exports, or custom artifacts
+2. **Assembles context** — CVE enrichment, playbook matching, historical investigation similarity
+3. **Generates a plan** — ordered skill runs, each mapped to a MITRE technique, with rationale you review before running
+4. **Produces findings** — structured, severity-badged, with remediation steps
+5. **Synthesizes a CISO report** — executive summary, confirmed techniques, prioritized remediation
+
+The **Casky Box** (casky-runner) is how you run investigations **locally** without platform setup, using docker-compose.
 
 ## Runner image
 
@@ -21,7 +48,49 @@ Docker host (your laptop or CI runner)
 ghcr.io/casky-ai/box/runner:latest
 ```
 
-## Quick start
+## Getting Started: Three Ways to Run Casky
+
+### Option 1: Docker Compose (Recommended for Testing)
+
+The easiest way to test Casky Box locally. Includes runner, CVE MCP server, skill, and target in one command.
+
+```bash
+# 1. Clone and navigate
+git clone https://github.com/casky-ai/casky-runner.git
+cd casky-runner
+
+# 2. Copy environment template
+cp .env.example .env
+# Edit .env and add your ANTHROPIC_API_KEY
+
+# 3. Start the lab stack (includes casky-runner, mcp, skill, target)
+docker compose --profile lab up -d
+
+# 4. Watch the runner
+docker compose logs -f casky-runner
+
+# 5. Check findings in the runner output
+# The runner POSTs findings to /api/runs/[id]/report if CASKY_RUN_ID + CASKY_TOKEN are set
+```
+
+**What starts:**
+- `casky-runner` — Claude Code agent
+- `casky-mcp` — CVE MCP server (auto-registered in Claude)
+- `skill-lab` — security tools (default: web-app)
+- `target` — vulnerable application (default: dvwa)
+
+**Environment variables in `.env`:**
+```bash
+ANTHROPIC_API_KEY=your-api-key-here
+CASKY_RUN_ID=optional-run-uuid  # Links findings to platform
+CASKY_TOKEN=optional-jwt         # JWT for POSTing findings
+SKILL_LAB_NAME=skill-lab         # Skill container name
+CASKY_APP_URL=https://casky.ai   # Platform URL override
+```
+
+### Option 2: Manual Docker (for Integration Testing)
+
+Run each container separately to test specific skills or targets.
 
 ```bash
 # 1. Create the isolated lab network (once)
@@ -47,6 +116,102 @@ docker run --rm \
   ghcr.io/casky-ai/box/runner:latest \
   casky run web-app
 ```
+
+### Option 3: Platform Integration (Full Workflow)
+
+Connect your local Casky Box to the **Casky platform** for structured investigations.
+
+**What happens:**
+1. You paste evidence on `casky.ai/investigate`
+2. Platform generates an investigation plan (ordered skill runs)
+3. You approve the plan
+4. Platform creates runs, dispatches to your Casky Box via `POST /api/runs`
+5. Runner executes skills, POSTs findings back to `/api/runs/[id]/report`
+6. Platform assembles findings into a CISO report
+
+**Setup:**
+```bash
+# 1. Start Casky Box (Option 1 or 2 above)
+
+# 2. In the platform, create a workspace and get a CASKY_TOKEN (JWT)
+
+# 3. Export the token in Casky Box environment
+export CASKY_TOKEN=eyJ...  # JWT from platform
+
+# 4. From the platform, submit evidence at casky.ai/investigate
+# Platform generates a plan and triggers your Casky Box runners
+
+# 5. View findings and CISO report on the platform dashboard
+```
+
+## Investigation Workflow
+
+### Step 1: Bring Evidence
+Open `casky.ai/investigate` and either:
+- **Paste text** — CloudTrail logs, SIEM exports, PCAP summaries, policy files
+- **Upload files** — `.log`, `.json`, `.csv`, `.txt`, `.xml` (max 2 MB each)
+
+Acknowledge the PII scrubbing checkbox before submitting.
+
+### Step 2: Context Assembly
+Before the AI sees your evidence, Casky assembles context in parallel:
+
+| Engine | Contributes |
+|--------|------------|
+| **CVE Watch** | CVSS, KEV status, MITRE mapping for detected CVEs |
+| **Playbook Library** | Matching investigation playbooks for detected techniques |
+| **Historical Plans** | Similar past investigations from your team (≥0.8 rating) |
+
+If any context engine fails, it contributes a gap message and the others proceed. **Investigations never block.**
+
+### Step 3: Review the Plan
+The platform generates a **structured investigation plan** with:
+- Ordered skill steps
+- Rationale for each step
+- Expected findings per step
+- MITRE technique coverage
+
+**You control the plan.** Remove steps that don't fit. Reorder if needed. Only click Approve when you're ready.
+
+### Step 4: Runs Execute in Parallel
+Platform dispatches one run per approved step to your Casky Box:
+```
+/api/runs → POST { run_id, skill_slug, evidence_text }
+                    ↓
+        Casky Box receives run request
+                    ↓
+        casky-runner: docker exec skill-lab <command>
+                    ↓
+        Claude analyzes evidence with skill context
+                    ↓
+        findings JSON → POST /api/runs/[id]/report
+                    ↓
+        Platform dashboard updates live
+```
+
+Each run surfaces **structured findings**: severity-badged, with remediation steps.
+
+### Step 5: Generate CISO Report
+Click **Generate CISO Report** when all runs complete. The platform synthesizes:
+
+| Section | Content |
+|---------|---------|
+| Executive Summary | What happened, what was confirmed, business impact |
+| Risk Rating | critical / high / medium / low |
+| Confirmed Techniques | MITRE ATT&CK IDs from actual evidence |
+| Key Findings | Table: severity · title · remediation (max 5) |
+| Remediation Actions | Table: priority · action · effort · impact (max 6) |
+| Immediate Next Steps | 2-3 specific actions to take now |
+| Affected Assets | Identifiers from the evidence |
+
+**This is the output you hand to a CISO or attach to a ticket.**
+
+### Step 6: Rate Steps (Feedback Loop)
+Rate each step: **Found something** / **Confirmed nothing** / **Wrong skill** / **Missed something**
+
+High-rated plans (≥0.8 with outcome summary) enter the few-shot pool — future investigations benefit from your team's actual judgments.
+
+---
 
 ## Commands
 
