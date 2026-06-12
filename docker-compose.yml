@@ -129,7 +129,7 @@ services:
   # MySQL database for DVWA (only starts with lab-dvwa profile)
   target-db:
     profiles: [lab-dvwa]
-    image: mysql:8.0-alpine
+    image: mysql:latest
     container_name: casky-target-db
     restart: unless-stopped
     environment:
