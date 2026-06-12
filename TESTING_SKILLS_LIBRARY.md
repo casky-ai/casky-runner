@@ -1,6 +1,55 @@
-# Casky Runner Skills Library Integration — Testing Guide
+# Casky Runner Skills Library + Phase 2 CVE Enrichment — Testing Guide
 
 Run these commands in order from the casky-runner directory.
+
+**Phase 2 additions (Task 8-18):**
+- CVE entity extraction (Phase A)
+- MCP CVE enrichment (Phase B)
+- Platform API integration (optional Phase B & C)
+- Anthropic SDK classifier (Phase D)
+- Upstream sync workflow + version tracking
+- Updated Plan dataclass with confidence + evidence gaps
+
+## Phase 2 Unit Tests (Before Docker)
+
+### Test 0a: Entity Extraction
+
+```bash
+python3 << 'EOF'
+import sys
+sys.path.insert(0, '.')
+from harness import extract_entities
+
+evidence = "CVE-2024-3400 attack using T1078. Attacker IP: 192.168.1.1. Target: api.example.com"
+entities = extract_entities(evidence)
+
+assert 'CVE-2024-3400' in entities.cve_ids
+assert 'T1078' in entities.technique_ids
+assert '192.168.1.1' in entities.ips
+assert 'example.com' in entities.hostnames
+print("✅ Extract entities works")
+EOF
+```
+
+**Expected:** `✅ Extract entities works`
+
+### Test 0b: Plan Dataclass Fields
+
+```bash
+grep -E "cve_references|evidence_gaps|confidence" harness.py | grep -v "#"
+```
+
+**Expected:** Shows new fields in @dataclass Plan
+
+### Test 0c: Dockerfile Dependencies
+
+```bash
+grep "mcp anthropic" Dockerfile
+```
+
+**Expected:** Shows `mcp anthropic` in pip install
+
+---
 
 ## Test 1: Build the skills library image (local testing)
 
@@ -276,11 +325,77 @@ docker exec casky-runner casky skills list | head -5
 
 ---
 
-## What's Next (Future Phases)
+## Phase 2 Integration Tests
 
-After these tests pass:
+### T9: Full Plan Generation with CVE Enrichment
 
-1. **Interactive execution** — Update AgentWorker to call agent.py scripts instead of casky run
-2. **Step-by-step prompts** — Add human input collection before each step
-3. **Real deployment** — Push skills library image to ghcr.io/casky-ai/skills-library
-4. **CI/CD** — `.github/workflows/build-skills.yml` automatically builds and pushes on commits
+```bash
+# Start full stack
+cp .env.example .env.local
+# Edit .env.local and add ANTHROPIC_API_KEY
+
+docker compose --profile lab-dvwa --env-file .env.local up -d
+sleep 30
+
+# Generate plan with evidence containing CVEs
+docker exec -it casky-runner bash << 'EOF'
+cat > /tmp/test-evidence.txt << 'EVIDENCE'
+System vulnerability assessment detected:
+- CVE-2024-3400 in Apache
+- CVE-2023-1234 in PHP
+- T1078 lateral movement
+- T1190 exploitation attempt
+EVIDENCE
+
+# Run harness and select "g" for generate
+# Then paste the evidence
+casky harness < /dev/null || true
+EOF
+```
+
+**Expected:**
+- Plan generation shows Phase A-D progress
+- Generated plan includes `cve_references` field
+- Generated plan includes `confidence` score
+- Generated plan includes `evidence_gaps` list
+
+### T10: MCP CVE Enrichment Verification
+
+```bash
+docker compose exec casky-mcp bash -c "echo 'CVE-MCP server running'"
+```
+
+**Expected:** Container responds (MCP server is active)
+
+### T11: Upstream Sync Workflow (Verify workflow syntax)
+
+```bash
+docker run --rm -v $(pwd):/workspace siderite/action-validator /workspace/.github/workflows/sync-skills.yml
+```
+
+Or manually check:
+```bash
+grep -E "schedule|workflow_dispatch|force" .github/workflows/sync-skills.yml
+```
+
+**Expected:** Workflow has schedule (06:30 UTC) and workflow_dispatch with force input
+
+### T12: Version Tracking
+
+```bash
+cat docker/skills/.last-sync
+```
+
+**Expected:** Shows version tag (e.g., `v1.0.0`)
+
+---
+
+## What's Next (Phase 3)
+
+After Phase 2 tests pass:
+
+1. **Platform API implementation** — Create `/api/v1/cve-spotlights` and `/api/v1/playbooks` endpoints
+2. **Evidence persistence** — Save all investigation sessions to database
+3. **Team workspaces** — Multi-user investigations with role-based access
+4. **Skill marketplace** — Community-submitted skills with ratings
+5. **Automated retest** — Schedule investigations to verify fixes

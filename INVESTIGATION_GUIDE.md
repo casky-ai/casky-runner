@@ -83,6 +83,17 @@ docker compose up runner -d
 
 ## Step 0: Generate a Plan from Evidence (2-5 minutes, optional)
 
+### Phase 2 CVE Enrichment Pipeline (Automatic)
+
+When you generate a plan from evidence, the harness runs a **4-phase enrichment pipeline** before selecting skills:
+
+**Phase A: Entity Extraction** — Detects CVE IDs, MITRE techniques, IPs, hostnames (pure regex)
+**Phase B: CVE Enrichment** — MCP server + optional platform API returns CVSS, KEV status, technique mappings
+**Phase C: Context Assembly** — Local similar plans + optional platform playbooks provide few-shot context
+**Phase D: Haiku Classifier** — Uses all context to select 5-8 relevant skills with confidence scores
+
+**Result:** Plans now include risk metadata (CVE references, evidence gaps, confidence) for better decisions.
+
 If you prefer to let the Haiku classifier select skills for you, you can generate an investigation plan automatically:
 
 ### 0a. Start the harness in plan generation mode

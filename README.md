@@ -2,8 +2,8 @@
 
 The AI runner image for the [Casky](https://casky.ai) platform. Ships Claude Code and Gemini CLI in a minimal Ubuntu container. Drives security exercises and investigations by issuing commands into a skill container via `docker exec`, against a target container on the same isolated Docker network.
 
-**Last Updated:** 2026-06-11  
-**Part of:** Casky v1.1 (May 31 – Jul 9, 2026)
+**Last Updated:** 2026-06-12  
+**Part of:** Casky v1.1 (May 31 – Jul 9, 2026) · **Phase 2:** CVE enrichment + upstream sync
 
 ```
 ┌────────────────────────────────────────────────────────────────────┐
@@ -21,10 +21,17 @@ The AI runner image for the [Casky](https://casky.ai) platform. Ships Claude Cod
 │  Docker host (your laptop or CI runner)                           │
 │  │                                                                │
 │  ├── casky-lab ─── isolated bridge network                        │
-│  │   ├── casky-runner (Claude Code + Gemini)                     │
-│  │   ├── casky-mcp (CVE MCP server)                              │
+│  │   ├── casky-runner (Claude Code + Gemini + Phase 2 pipeline)  │
+│  │   │   ├─ Phase A: Entity extraction (CVE IDs, T-codes, IPs)   │
+│  │   │   ├─ Phase B: CVE enrichment (MCP SDK + platform API)     │
+│  │   │   ├─ Phase C: Historical similarity + playbooks            │
+│  │   │   └─ Phase D: Haiku classifier (Anthropic SDK)            │
+│  │   ├── casky-mcp (CVE MCP server — stdio access)               │
 │  │   ├── skill container ghcr.io/casky-ai/skills/<name>:latest  │
 │  │   └── target container ghcr.io/casky-ai/targets/<name>:latest│
+│  │                                                                │
+│  ├── Upstream sync (daily 06:30 UTC)                              │
+│  │   └── Auto-rebuild casky-skills image if upstream changed     │
 │  │                                                                │
 │  └── docker exec ──► findings JSON ──► /api/runs/[id]/report    │
 └────────────────────────────────────────────────────────────────────┘

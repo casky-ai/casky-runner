@@ -1,13 +1,15 @@
 # Casky Runner — Quick Start
 
-Run structured security investigations locally using the Casky Box (casky-runner v1.1).
+Run structured security investigations locally using the Casky Box (casky-runner v1.2).
 
 **What this does:**
 - Boots an isolated lab network with security tools (skill image) and a target application
 - Supports **interactive guided investigations** — Claude guides you through each skill step-by-step
+- **Phase 2: CVE enrichment pipeline** — 4-phase plan generation with entity extraction, CVE enrichment, and platform API integration
 - Receives investigation plans from the Casky platform (or runs local plans air-gapped)
 - Synthesizes findings into structured reports (MITRE, severity, remediation)
 - POSTs findings back to the platform dashboard (or saves locally)
+- **Auto-syncs upstream skills library** — daily check for new skills (06:30 UTC)
 
 **Time to first investigation:** 5 minutes
 
@@ -46,6 +48,28 @@ CASKY_APP_URL=https://app.casky.ai
 ```
 
 **Note:** The runner container reads `ANTHROPIC_API_KEY` from the environment. Make sure it's set in `.env.local` before starting containers with `--env-file .env.local`.
+
+## Phase 2: CVE Enrichment Pipeline (Automatic)
+
+When you generate a plan from evidence, the harness runs a **4-phase pipeline** to produce rich investigation plans:
+
+### Phase A: Entity Extraction
+Detects CVE IDs, MITRE technique IDs, IP addresses, and hostnames from raw evidence (pure regex, no API calls).
+
+### Phase B: CVE Enrichment
+- **Local (always):** MCP SDK calls the CVE server for CVSS, KEV status, technique mappings
+- **With CASKY_API_KEY:** Platform API also returns curated CVE spotlights and skill recommendations
+
+### Phase C: Context Assembly
+- **Local (always):** Searches ~/.casky/plans/ for similar past investigations (few-shot context)
+- **With CASKY_API_KEY:** Platform API returns matching investigation playbooks
+
+### Phase D: Haiku Classification
+Classifier combines all context (entities, CVE enrichment, similar plans, playbooks) to select 5-8 relevant skills. Returns confidence scores and evidence gaps.
+
+**Result:** Plans now include `cve_references`, `evidence_gaps`, and `confidence` fields — better decisions, faster investigations.
+
+---
 
 ## 2. Populate the skills library (one-time setup)
 
