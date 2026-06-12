@@ -90,32 +90,50 @@ services:
   # ── Lab profile — only starts with: docker compose --profile lab up ──────────
 
   # Skill container: security tools pre-installed (nmap, nuclei, ZAP, ScoutSuite, etc.)
-  # Override image with: SKILL_IMAGE=ghcr.io/casky-ai/skills/cloud:latest
+  # Override with custom image or build from Dockerfile
   skill-lab:
-    profiles: [lab]
-    image: ${SKILL_IMAGE:-ghcr.io/casky-ai/skills/web-app:latest}
+    profiles: [lab, lab-dvwa, lab-juice-shop, lab-custom]
+    build:
+      context: .
+      dockerfile: docker/skill-lab/Dockerfile
+    image: casky-skill-lab:latest
     container_name: skill-lab
     restart: unless-stopped
     command: sleep infinity
     volumes:
       - casky-skills-data:/opt/skills-library:ro   # skills library (read-only) for agent.py scripts
     networks:
-      - casky-lab
+      - casky-lab       # Isolated from internet for security scanning
+      - casky-internal  # Can reach runner's report server on localhost
     # No internet access for the skill container — it scans the target only
     dns: []
+
+  # ── CVE MCP Server (Phase 2: CVE Enrichment — Optional) ─────────────────────
+  # NOTE: cve_mcp module not yet implemented. This service will be added in a
+  # follow-up. For now, Phase 2 tests run without MCP enrichment.
+  # casky-mcp:
+  #   profiles: [lab, lab-dvwa, lab-juice-shop, lab-custom]
+  #   image: casky-mcp:latest
+  #   container_name: casky-mcp
+  #   command: python3 -m cve_mcp.server
+  #   networks:
+  #     - casky-internal
 
   # ── Target Containers (choose one via profile) ──────────────────────────────
   # DVWA (requires MySQL database)
   target-dvwa:
     profiles: [lab-dvwa]
-    image: ghcr.io/casky-ai/targets/dvwa:latest
+    image: ghcr.io/digininja/dvwa:latest
     container_name: casky-target
     restart: unless-stopped
     environment:
-      MYSQL_HOSTNAME: target-db
-      MYSQL_USER: dvwa
-      MYSQL_PASSWORD: ${DB_PASSWORD:-dvwa}
-      MYSQL_DB: dvwa
+      DB_SERVER: target-db
+      DB_USER: dvwa
+      DB_PASSWORD: ${DB_PASSWORD:-dvwa}
+      DB_DATABASE: dvwa
+      RECAPTCHA_PRIV_KEY: ""
+      RECAPTCHA_PUB_KEY: ""
+      SECURITY_LEVEL: low
     depends_on:
       target-db:
         condition: service_healthy
@@ -158,6 +176,7 @@ services:
       MYSQL_PASSWORD: ${DB_PASSWORD:-dvwa}
     volumes:
       - casky-target-db:/var/lib/mysql
+      - ./docker/dvwa-init.sql:/docker-entrypoint-initdb.d/init.sql
     networks:
       - casky-lab
     healthcheck:

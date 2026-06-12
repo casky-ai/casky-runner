@@ -599,7 +599,9 @@ class LocalReportServer(threading.Thread):
 
     @property
     def base_url(self) -> str:
-        return f"http://localhost:{config.local_port}"
+        # Use container hostname so skill-lab can POST findings back
+        # (localhost won't work across docker networks)
+        return f"http://casky-runner:{config.local_port}"
 
 
 # ── Platform API client ───────────────────────────────────────────────────────
@@ -1085,7 +1087,98 @@ async def _run_harness(plan: Plan, steps: list[Step]) -> None:
     ui.show_summary(harness, report_path)
 
 
+# ── Interactive guided investigation ──────────────────────────────────────────
+
+def _extract_commands_from_skill_doc(skill_document: str) -> list[str]:
+    """Extract shell commands from SKILL.md document."""
+    commands = []
+    in_commands_section = False
+
+    for line in skill_document.split("\n"):
+        if "## Commands" in line or "## Usage" in line or "## Examples" in line:
+            in_commands_section = True
+            continue
+        if in_commands_section:
+            if line.startswith("## "):
+                break
+            if line.strip().startswith("```") or line.strip().startswith("$"):
+                stripped = line.strip().strip("$").strip("`").strip()
+                if stripped and not stripped.startswith("#"):
+                    commands.append(stripped)
+
+    return commands[:5]  # Return first 5 commands
+
+
+def _get_fallback_commands(category: str) -> list[str]:
+    """Return generic commands by skill category."""
+    fallbacks = {
+        "web-app": [
+            "curl -s -I http://casky-target/ | head -10",
+            "httpx -u http://casky-target -silent",
+            "nuclei -u http://casky-target -silent -severity medium",
+            "ffuf -u http://casky-target/FUZZ -w /usr/share/wordlists/dirb/common.txt -silent -mc 200,301,302",
+            "nikto -h casky-target -nossl",
+        ],
+        "cloud": [
+            "aws s3 ls --profile default 2>/dev/null || echo 'AWS not configured'",
+            "aws ec2 describe-instances --region us-east-1 2>/dev/null || echo 'AWS not configured'",
+        ],
+        "recon": [
+            "curl -s http://casky-target/ | head -20",
+            "httpx -u http://casky-target -silent",
+            "nuclei -u http://casky-target -silent",
+        ],
+        "network": [
+            "ip addr show",
+            "netstat -tlnp 2>/dev/null || ss -tlnp",
+        ],
+    }
+    return fallbacks.get(category, ["echo 'Run appropriate security tools for this skill'"])
+
+
+def print_interactive_runbook(plan: Plan, steps: list[Step]) -> None:
+    """Print step-by-step runbook for interactive investigation."""
+    console.print(Panel(
+        "[bold cyan]Open a skill-lab shell in a new terminal:[/bold cyan]\n\n"
+        "  [cyan]docker exec -it skill-lab bash[/cyan]\n\n"
+        "[dim]Then follow each step below. Paste the output back to this window when done.[/dim]",
+        title="Interactive Investigation Runbook",
+        border_style="cyan"
+    ))
+
+    for i, step in enumerate(steps, 1):
+        console.print(f"\n[bold cyan]Step {i}: {step.skill_slug}[/bold cyan]")
+        console.print(f"[dim]MITRE Technique:[/dim] {step.technique_id} — {step.technique_name}")
+        if step.rationale:
+            console.print(f"[dim]Goal:[/dim] {step.rationale}")
+
+        console.print(f"\n[bold]Run in skill-lab:[/bold]")
+
+        # Extract commands from skill document or use fallback
+        commands = _extract_commands_from_skill_doc(step.skill_document)
+        if not commands:
+            commands = _get_fallback_commands(step.skill_category)
+
+        for cmd in commands:
+            console.print(f"  [cyan]{cmd}[/cyan]")
+
+        if step.evidence_focus:
+            console.print(f"\n[dim]Look for in output:[/dim] {step.evidence_focus}")
+
+        console.print("\n" + "─" * 70)
+
+    console.print("\n[green]✓ Paste the output from each step back to this window.[/green]")
+    console.print("[green]✓ Provide context about what you found and what it means.[/green]")
+    console.print("[green]✓ Claude will analyze and synthesize findings into a report.[/green]\n")
+
+
 def main() -> None:
+    import argparse
+    parser = argparse.ArgumentParser(description="Casky Agentic Harness")
+    parser.add_argument("--auto", action="store_true",
+                        help="Auto-execute skills via Claude subprocesses (advanced)")
+    args = parser.parse_args()
+
     ui = HarnessUI()
     ui.show_welcome()
     console.print()
@@ -1156,7 +1249,15 @@ def main() -> None:
         sys.exit(0)
 
     console.print()
-    asyncio.run(_run_harness(plan, steps))
+
+    # Default: interactive guided investigation
+    # For power users: --auto flag to enable autonomous execution
+    if args.auto:
+        # Auto-execute: spawn Claude subprocesses for each skill
+        asyncio.run(_run_harness(plan, steps))
+    else:
+        # Interactive: print runbook and let investigator run commands manually
+        print_interactive_runbook(plan, steps)
 
 
 if __name__ == "__main__":

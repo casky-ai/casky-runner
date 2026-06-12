@@ -35,17 +35,23 @@ case "$COMMAND" in
     if [[ -n "${CASKY_RUN_ID:-}" && -n "${CASKY_TOKEN:-}" ]]; then
       REPORT_SECTION="
 
-## Report your findings
+---
 
-POST ${CASKY_APP_URL:-https://app.casky.ai}/api/runs/${CASKY_RUN_ID}/report
-Authorization: Bearer ${CASKY_TOKEN}
-Content-Type: application/json
+## Submit your findings
 
-{
-  \"findings\": [...],
-  \"summary\": \"What you did and what you found\",
-  \"raw_output\": \"Full terminal output\"
-}"
+When done, run this curl command (replace [...] with your findings):
+
+\`\`\`bash
+curl -s -X POST \\
+  -H 'Authorization: Bearer ${CASKY_TOKEN}' \\
+  -H 'Content-Type: application/json' \\
+  -d '{\"findings\":[{\"title\":\"TITLE\",\"severity\":\"high\",\"description\":\"DESC\",\"proof\":\"EVIDENCE\",\"mitre_technique\":\"TXXXX\"}],\"summary\":\"One sentence summary\",\"raw_output\":\"paste terminal output\"}' \\
+  ${CASKY_APP_URL:-http://casky-runner:8765}/api/runs/${CASKY_RUN_ID}/report
+\`\`\`
+
+Severity: critical / high / medium / low / informational
+No findings? Use empty array: \`{\"findings\":[],\"summary\":\"No issues found\",\"raw_output\":\"\"}\`
+"
     fi
 
     PROMPT="${SKILL_PROMPT}
