@@ -4,7 +4,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 # System deps + Docker CLI (no daemon) + Node.js LTS
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl ca-certificates gnupg lsb-release jq git python3 python3-pip \
+    curl ca-certificates gnupg lsb-release jq git python3 python3-pip python3-venv \
     && curl -fsSL https://deb.nodesource.com/setup_lts.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
@@ -29,9 +29,11 @@ RUN cd /opt/casky-tools \
     && ln -sf /opt/casky-tools/node_modules/.bin/claude /usr/local/bin/claude \
     && ln -sf /opt/casky-tools/node_modules/.bin/gemini /usr/local/bin/gemini
 
-# Non-root user
+# Non-root user with docker socket access
 RUN groupadd --gid 1001 casky \
-    && useradd --uid 1001 --gid casky --shell /bin/bash --create-home casky
+    && useradd --uid 1001 --gid casky --shell /bin/bash --create-home casky \
+    && groupadd -f docker \
+    && usermod -aG docker casky
 
 # Agentic harness — Python venv with rich + requests for the terminal UI
 RUN python3 -m venv /opt/casky-console \

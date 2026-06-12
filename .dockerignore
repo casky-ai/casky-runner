@@ -1,0 +1,56 @@
+# Version control
+.git
+.gitignore
+.gitattributes
+
+# CI/CD
+.github
+.gitlab-ci.yml
+.circleci
+.travis.yml
+
+# IDE and editor files
+.vscode
+.idea
+.DS_Store
+*.swp
+*.swo
+*~
+*.iml
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+
+# Build artifacts
+dist
+build
+coverage
+.nyc_output
+
+# Logs
+*.log
+logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment and dependencies
+.env
+.env.example
+node_modules
+__pycache__
+*.pyc
+*.pyo
+*.egg-info
+.pytest_cache
+
+# Runtime
+.trivyignore
+Makefile
+QUICKSTART.md
+README.md
+tests
+.dockerignore
+docker-compose.yml
+Dockerfile
