@@ -1,2 +1,14 @@
 .DS_Store
 *.log
+.env
+node_modules/
+dist/
+coverage/
+.idea/
+.vscode/
+*.iml
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?   
