@@ -4,8 +4,9 @@ Run structured security investigations locally using the Casky Box (casky-runner
 
 **What this does:**
 - Boots an isolated lab network with security tools (skill image) and a target application
+- Supports **interactive guided investigations** — Claude guides you through each skill step-by-step
 - Receives investigation plans from the Casky platform (or runs local plans air-gapped)
-- Executes skill runs via Claude Code against your evidence
+- Synthesizes findings into structured reports (MITRE, severity, remediation)
 - POSTs findings back to the platform dashboard (or saves locally)
 
 **Time to first investigation:** 5 minutes
@@ -39,20 +40,50 @@ CASKY_APP_URL=https://app.casky.ai
 SKILL_LAB_NAME=skill-lab         # Name of skill container
 ```
 
-## 2. Start the Casky Box stack
+## 2. Choose and start a target
+
+Pick one of three target options:
+
+### Option A: DVWA (Damn Vulnerable Web App) — Full multi-vulnerability investigation
 
 ```bash
-# Start all services: casky-runner, casky-mcp, skill, target
-docker compose --profile lab --env-file .env.local up -d
+docker compose --profile lab-dvwa --env-file .env.local up -d
 ```
 
-This starts:
-- **casky-runner** — Claude Code agent + agentic harness
-- **casky-mcp** — CVE MCP server (auto-registered in Claude)
-- **skill-lab** — security tool container (default: `web-app`)
-- **target** — vulnerable application (default: `dvwa`)
+**Starts:**
+- **casky-runner** — Claude Code agent
+- **casky-mcp** — CVE MCP server
+- **skill-lab** — web-app tools (nmap, nuclei, sqlmap, etc.)
+- **casky-target** — DVWA vulnerable app
+- **casky-target-db** — MySQL database (auto-initialized)
 
-All on an isolated Docker network (`casky-lab`).
+**Best for:** Web application security (SQL injection, XSS, CSRF, auth bypass)
+
+### Option B: OWASP Juice Shop — Self-contained, no database setup
+
+```bash
+docker compose --profile lab-juice-shop --env-file .env.local up -d
+```
+
+**Starts:**
+- Same services as Option A, but with Juice Shop (Node.js) instead of DVWA
+- No database to configure; faster to start
+
+**Best for:** Web app security + ecommerce vulnerabilities
+
+### Option C: Custom target — Bring your own container
+
+```bash
+export TARGET_IMAGE=your-custom:latest
+docker compose --profile lab-custom --env-file .env.local up -d
+```
+
+**Requirements:**
+- Container must listen on port 80 or 8080
+- Connected to `casky-lab` Docker network
+- Document the application's vulnerabilities in a README
+
+**Best for:** Testing against your own applications or third-party targets
 
 ## 3. Verify tools are ready
 
@@ -71,40 +102,102 @@ PASS: all 12 tools present in skill-lab (web-app)
 
 If tools are missing, the skill image may still be pulling. Wait 30s and retry.
 
-## 4. Run an investigation from the platform
-
-**Option A: Platform mode** (requires `CASKY_TOKEN`):
-
-1. Go to `app.casky.ai/investigate`
-2. Paste evidence (CloudTrail logs, SIEM exports, etc.) or upload a file
-3. Review the generated investigation plan
-4. Click Approve — platform dispatches runs to your Casky Box
-5. Watch findings arrive in real-time on the platform dashboard
-6. Click **Generate CISO Report** when all runs complete
-
-Your Casky Box receives `POST /api/runs`, executes skills, and POSTs findings back to `/api/runs/[id]/report`.
-
-**Option B: Local/air-gapped mode** (no API key needed):
+Also verify the target is responding:
 
 ```bash
-# Load a plan JSON file (exported from casky.ai or created manually)
-docker cp /path/to/plan.json casky-runner:/home/casky/.casky/plans/my-plan.json
-
-# Run the agentic harness
-docker exec -it casky-runner casky harness
-
-# Select the plan from the menu
-# Findings are saved to /var/casky/reports/my-plan/findings.json
+docker exec skill-lab curl -s -I http://target/ | head -3
 ```
 
-## 5. View findings
+Should see `HTTP/1.1 200` or `302 Found`.
 
-**Platform mode:** Findings appear on app.casky.ai dashboard in real-time.
+## 4. Interactive guided investigation workflow
 
-**Local mode:** Retrieve findings from the container:
+This is a **human-in-the-loop** investigation where Claude guides you step-by-step through each skill.
+
+### Step 1: Evidence gathering
+
+Gather preliminary reconnaissance on your target:
+
 ```bash
-docker exec casky-runner cat /var/casky/reports/my-plan/REPORT.md
-docker exec casky-runner cat /var/casky/reports/my-plan/findings.json
+# Example: Web app reconnaissance
+docker exec skill-lab bash -c '
+echo "=== HTTP Headers ==="
+curl -s -I http://target/ | head -5
+
+echo "=== Server Detection ==="
+curl -s http://target/ | head -20
+'
+```
+
+Or upload/paste evidence from logs, exports, or SIEM systems.
+
+### Step 2: Skill identification & interactive execution
+
+Start Claude as your investigation guide:
+
+```bash
+docker exec -it casky-runner casky run web-app
+```
+
+Paste this prompt (or your own evidence + task):
+
+```
+# Interactive Web Application Security Investigation
+
+## My Evidence
+[Paste your reconnaissance output or raw logs here]
+
+## Task
+Based on this evidence, guide me through a structured investigation:
+
+1. **Identify applicable skills** — which security assessment techniques apply?
+2. **For each skill, provide guidance:**
+   - What the skill tests for (MITRE techniques, vulnerability classes)
+   - Exact command(s) to run in the skill container
+   - What to look for in the output
+3. **Sequential execution** — one skill at a time
+   - I'll run the command you suggest
+   - Paste the output back
+   - You analyze and move to the next skill
+4. **After all skills:**
+   - Synthesize findings into a structured report
+   - Map to MITRE ATT&CK
+   - Provide severity ratings + remediation
+
+Let's start: what's skill #1, and what exact command should I run?
+```
+
+Then:
+- Claude suggests **Skill 1** and the exact command to run
+- You copy the command and execute it (in another terminal):
+  ```bash
+  docker exec skill-lab [command Claude suggested]
+  ```
+- Paste the output back to Claude
+- Claude analyzes, suggests **Skill 2**
+- Repeat until all applicable skills are covered
+
+### Step 3: Findings synthesis
+
+Once all skills are executed, Claude synthesizes:
+- **Confirmed vulnerabilities** (with proof from tool output)
+- **MITRE ATT&CK mapping** (which techniques)
+- **Risk rating** (CRITICAL/HIGH/MEDIUM/LOW)
+- **Remediation steps** (specific fixes)
+- **CISO report** (executive summary, prioritized actions)
+
+### Alternative: Automated harness mode
+
+If you prefer fully automated (no interactive guidance):
+
+```bash
+# Platform mode
+docker exec -it casky-runner casky harness
+# (requires CASKY_TOKEN; fetches plan from app.casky.ai)
+
+# Or local mode
+docker cp /path/to/plan.json casky-runner:/home/casky/.casky/plans/my-plan.json
+docker exec -it casky-runner casky harness
 ```
 
 ---
@@ -148,34 +241,90 @@ docker exec casky-runner cat /var/casky/reports/my-plan/findings.json
 
 ## Testing Scenarios
 
-### Test 1: Single skill run (manual)
+### Scenario 1: Interactive Web App Investigation (DVWA)
+
 ```bash
+# Start DVWA stack
+docker compose --profile lab-dvwa --env-file .env.local up -d
+sleep 10
+
+# Verify target is ready
+docker exec skill-lab curl -s -I http://target/ | head -3
+
+# Start interactive investigation
 docker exec -it casky-runner casky run web-app
-# Paste a SKILL.md prompt, press Ctrl+D
-# Claude Code runs the skill against evidence
 ```
 
-### Test 2: Verify tool availability
+Paste your evidence or this template:
+
+```
+# DVWA Investigation
+
+## Evidence
+- Target: http://target:80 (Apache/PHP)
+- Authentication: admin/password credentials
+- Application: DVWA (intentionally vulnerable web app)
+
+## Goal
+Guide me through a security assessment. For each skill:
+1. Show what MITRE techniques it covers
+2. Provide the exact command to run
+3. I'll paste the output back
+4. You analyze and suggest the next skill
+
+Let's start: what's the first skill?
+```
+
+### Scenario 2: Quick Tool Verification
+
 ```bash
+# Verify skill-lab has all web-app tools
+docker exec casky-runner casky verify web-app
+
+# Verify other skill categories
 docker exec casky-runner casky verify cloud
-# Confirms all cloud-security tools are present in skill-lab
+docker exec casky-runner casky verify network
 ```
 
-### Test 3: Full investigation from evidence
-1. Prepare evidence: CloudTrail logs, SIEM export, or PCAP file
-2. Open `app.casky.ai/investigate`
-3. Upload or paste evidence
-4. Review platform-generated investigation plan
-5. Approve to trigger your Casky Box
-6. Watch findings stream live
-7. Generate CISO report when all runs complete
+### Scenario 3: Platform Integration
 
-### Test 4: Air-gapped / local-only mode
-- Run Casky Box with `CASKY_TOKEN` empty
-- Export a plan JSON from the platform
-- Copy plan into container: `docker cp plan.json casky-runner:/home/casky/.casky/plans/`
-- Run `docker exec -it casky-runner casky harness`
-- Findings saved locally to `/var/casky/reports/`
+1. Set `CASKY_TOKEN` in `.env.local` (generate at `app.casky.ai/workspace/settings`)
+2. Run Casky Box: `docker compose --profile lab-dvwa up -d`
+3. Go to `app.casky.ai/investigate`
+4. Paste or upload evidence
+5. Platform generates a plan and dispatches to your Casky Box
+6. Watch findings stream live
+7. Generate CISO report when complete
+
+### Scenario 4: Air-gapped (No Internet)
+
+```bash
+# Run with CASKY_TOKEN empty
+docker compose --profile lab-dvwa up -d
+
+# Load a pre-exported plan (or create one manually)
+docker cp /path/to/plan.json casky-runner:/home/casky/.casky/plans/my-plan.json
+
+# Run the harness locally
+docker exec -it casky-runner casky harness
+
+# Retrieve findings
+docker exec casky-runner cat /var/casky/reports/my-plan/findings.json
+```
+
+### Scenario 5: Custom Target
+
+```bash
+# Set your own target image
+export TARGET_IMAGE=myapp:latest
+docker compose --profile lab-custom --env-file .env.local up -d
+
+# Verify it's reachable
+docker exec skill-lab curl -s http://target:80 | head -20
+
+# Run investigation
+docker exec -it casky-runner casky run web-app
+```
 
 ---
 

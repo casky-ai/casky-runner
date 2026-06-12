@@ -50,9 +50,9 @@ ghcr.io/casky-ai/box/runner:latest
 
 ## Getting Started: Three Ways to Run Casky
 
-### Option 1: Docker Compose (Recommended for Testing)
+### Option 1: Docker Compose with Target Selection (Recommended)
 
-The easiest way to test Casky Box locally. Includes runner, CVE MCP server, skill, and target in one command.
+The easiest way to test Casky Box locally. Choose your target and run:
 
 ```bash
 # 1. Clone and navigate
@@ -63,21 +63,35 @@ cd casky-runner
 cp .env.example .env
 # Edit .env and add your ANTHROPIC_API_KEY
 
-# 3. Start the lab stack (includes casky-runner, mcp, skill, target)
-docker compose --profile lab up -d
+# 3. Choose and start a target (pick ONE):
 
-# 4. Watch the runner
-docker compose logs -f casky-runner
+# ✅ DVWA (full web app vulnerabilities + database)
+docker compose --profile lab-dvwa up -d
 
-# 5. Check findings in the runner output
-# The runner POSTs findings to /api/runs/[id]/report if CASKY_RUN_ID + CASKY_TOKEN are set
+# OR
+
+# ✅ OWASP Juice Shop (self-contained, no DB)
+docker compose --profile lab-juice-shop up -d
+
+# OR
+
+# ✅ Custom target (bring your own)
+export TARGET_IMAGE=your-app:latest
+docker compose --profile lab-custom up -d
+
+# 4. Verify target is ready
+docker exec skill-lab curl -s -I http://target/ | head -3
+
+# 5. Start interactive investigation
+docker exec -it casky-runner casky run web-app
 ```
 
-**What starts:**
+**What starts (all targets include):**
 - `casky-runner` — Claude Code agent
 - `casky-mcp` — CVE MCP server (auto-registered in Claude)
-- `skill-lab` — security tools (default: web-app)
-- `target` — vulnerable application (default: dvwa)
+- `skill-lab` — security tools (nmap, nuclei, sqlmap, etc.)
+- `casky-target` — your chosen vulnerable app
+- `casky-target-db` — MySQL (DVWA only; auto-initialized)
 
 **Environment variables in `.env`:**
 ```bash
@@ -86,7 +100,17 @@ CASKY_RUN_ID=optional-run-uuid  # Links findings to platform
 CASKY_TOKEN=optional-jwt         # JWT for POSTing findings
 SKILL_LAB_NAME=skill-lab         # Skill container name
 CASKY_APP_URL=https://casky.ai   # Platform URL override
+DB_PASSWORD=dvwa                 # MySQL password (DVWA only)
+TARGET_IMAGE=your-app:latest     # Custom target image
 ```
+
+**Target Comparison:**
+
+| Target | Database | Best For | Setup Time |
+|--------|----------|----------|------------|
+| **DVWA** | MySQL (auto) | Full web app assessment (SQLi, XSS, CSRF, auth) | 30s |
+| **Juice Shop** | None (Node.js) | Web app + ecommerce vulns | 10s |
+| **Custom** | Your choice | Your own app or third-party | Varies |
 
 ### Option 2: Manual Docker (for Integration Testing)
 

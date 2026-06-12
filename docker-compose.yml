@@ -7,9 +7,13 @@ services:
   # Usage (single skill):   docker exec -it casky-runner casky run web-app
   # Usage (full harness):   docker exec -it casky-runner casky harness
   runner:
-    image: ghcr.io/casky-ai/box/runner:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: casky-runner:latest
     container_name: casky-runner
     restart: unless-stopped
+    user: root
     environment:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
       GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
@@ -75,21 +79,73 @@ services:
     image: ${SKILL_IMAGE:-ghcr.io/casky-ai/skills/web-app:latest}
     container_name: skill-lab
     restart: unless-stopped
+    command: sleep infinity
     networks:
       - casky-lab
     # No internet access for the skill container — it scans the target only
     dns: []
 
-  # Target container: vulnerable app to practice against
-  # Override image with: TARGET_IMAGE=ghcr.io/casky-ai/targets/juice-shop:latest
-  target:
-    profiles: [lab]
-    image: ${TARGET_IMAGE:-ghcr.io/casky-ai/targets/dvwa:latest}
+  # ── Target Containers (choose one via profile) ──────────────────────────────
+  # DVWA (requires MySQL database)
+  target-dvwa:
+    profiles: [lab-dvwa]
+    image: ghcr.io/casky-ai/targets/dvwa:latest
+    container_name: casky-target
+    restart: unless-stopped
+    environment:
+      MYSQL_HOSTNAME: target-db
+      MYSQL_USER: dvwa
+      MYSQL_PASSWORD: ${DB_PASSWORD:-dvwa}
+      MYSQL_DB: dvwa
+    depends_on:
+      target-db:
+        condition: service_healthy
+    networks:
+      - casky-lab
+    dns: []
+
+  # OWASP Juice Shop (self-contained, no database)
+  target-juice-shop:
+    profiles: [lab-juice-shop]
+    image: bkimminich/juice-shop:latest
+    container_name: casky-target
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+    networks:
+      - casky-lab
+    dns: []
+
+  # Custom target (user-provided image via TARGET_IMAGE env var)
+  target-custom:
+    profiles: [lab-custom]
+    image: ${TARGET_IMAGE:-alpine:latest}
     container_name: casky-target
     restart: unless-stopped
     networks:
       - casky-lab
-    # No internet access for the target container
+    dns: []
+
+  # MySQL database for DVWA (only starts with lab-dvwa profile)
+  target-db:
+    profiles: [lab-dvwa]
+    image: mysql:8.0-alpine
+    container_name: casky-target-db
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-root}
+      MYSQL_DATABASE: dvwa
+      MYSQL_USER: dvwa
+      MYSQL_PASSWORD: ${DB_PASSWORD:-dvwa}
+    volumes:
+      - casky-target-db:/var/lib/mysql
+    networks:
+      - casky-lab
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     dns: []
 
 networks:
@@ -106,3 +162,4 @@ networks:
 volumes:
   casky-db-data:
   casky-reports:    # persistent findings storage for local mode
+  casky-target-db:  # MySQL database for DVWA target
