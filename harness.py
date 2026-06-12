@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -33,7 +34,10 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+import anthropic
 import requests
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import stdio_client
 from rich.console import Console
 from rich.layout import Layout
 from rich.live import Live
@@ -62,6 +66,34 @@ class Step:
 
 
 @dataclass
+class ExtractedEntities:
+    cve_ids: list[str] = field(default_factory=list)
+    technique_ids: list[str] = field(default_factory=list)
+    ips: list[str] = field(default_factory=list)
+    hostnames: list[str] = field(default_factory=list)
+
+
+@dataclass
+class CveEnrichment:
+    cve_id: str
+    cvss_score: float | None = None
+    cvss_severity: str = ""
+    is_kev: bool = False
+    technique_ids: list[str] = field(default_factory=list)
+    skill_ids: list[str] = field(default_factory=list)
+    ai_analysis: str = ""
+
+
+@dataclass
+class Playbook:
+    id: str
+    name: str
+    domain: str
+    mitre_techniques: list[str] = field(default_factory=list)
+    steps: list[dict] = field(default_factory=list)
+
+
+@dataclass
 class Plan:
     id: str
     domain: str
@@ -69,6 +101,9 @@ class Plan:
     status: str
     steps: list[Step] = field(default_factory=list)
     created_at: str = ""
+    cve_references: list[CveEnrichment] = field(default_factory=list)
+    evidence_gaps: list[str] = field(default_factory=list)
+    confidence: float = 0.0
 
 
 @dataclass
@@ -212,6 +247,106 @@ class LocalSkillsLibrary:
         return "\n".join(lines[:800])
 
 
+# ── CVE enrichment pipeline ──────────────────────────────────────────────────
+
+def extract_entities(evidence_text: str) -> ExtractedEntities:
+    """Extract CVE IDs, technique IDs, IPs, and hostnames from evidence text."""
+    entities = ExtractedEntities()
+
+    cve_pattern = r'CVE-\d{4}-\d{4,}'
+    entities.cve_ids = list(set(re.findall(cve_pattern, evidence_text, re.IGNORECASE)))
+
+    technique_pattern = r'T\d{4}(?:\.\d{3})?'
+    entities.technique_ids = list(set(re.findall(technique_pattern, evidence_text)))
+
+    ip_pattern = r'\b(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\b'
+    entities.ips = list(set(re.findall(ip_pattern, evidence_text)))
+
+    hostname_pattern = r'\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}\b'
+    entities.hostnames = list(set(re.findall(hostname_pattern, evidence_text, re.IGNORECASE)))
+
+    return entities
+
+
+async def enrich_with_cve_mcp(cve_ids: list[str]) -> dict[str, Any]:
+    """Call CVE MCP server directly via MCP SDK to enrich CVE data."""
+    if not cve_ids:
+        return {}
+
+    try:
+        params = StdioServerParameters(
+            command="/opt/cve-mcp/bin/python3",
+            args=["-m", "cve_mcp.server"]
+        )
+        async with stdio_client(params) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                result = await session.call_tool("lookup_cve", {"cve_ids": cve_ids})
+                if result.content and len(result.content) > 0:
+                    return json.loads(result.content[0].text)
+                return {}
+    except Exception as e:
+        console.print(f"[yellow]Warning: MCP CVE enrichment failed:[/yellow] {e}")
+        return {}
+
+
+def fetch_platform_cve_spotlights(cve_ids: list[str]) -> dict[str, Any]:
+    """Fetch CVE spotlights from platform API if CASKY_API_KEY is set."""
+    if not config.api_key or not cve_ids:
+        return {}
+
+    try:
+        resp = requests.get(
+            f"{config.app_url}/api/v1/cve-spotlights",
+            headers=config.auth_header,
+            params={"cve_ids": ",".join(cve_ids)},
+            timeout=15,
+        )
+        resp.raise_for_status()
+        return resp.json()
+    except Exception as e:
+        console.print(f"[yellow]Warning: platform CVE enrichment failed:[/yellow] {e}")
+        return {}
+
+
+def find_similar_local_plans(evidence_text: str) -> list[dict]:
+    """Find similar local plans from ~/.casky/plans/ for few-shot context."""
+    similar = []
+    config.plans_dir.mkdir(parents=True, exist_ok=True)
+
+    for plan_file in sorted(config.plans_dir.glob("*.json"))[:5]:
+        try:
+            data = json.loads(plan_file.read_text())
+            similar.append({
+                "plan_id": data.get("id", ""),
+                "domain": data.get("domain", ""),
+                "steps_count": len(data.get("investigation_steps", [])),
+            })
+        except Exception:
+            pass
+
+    return similar
+
+
+def fetch_platform_playbooks(technique_ids: list[str]) -> dict[str, Any]:
+    """Fetch investigation playbooks from platform API if CASKY_API_KEY is set."""
+    if not config.api_key or not technique_ids:
+        return {}
+
+    try:
+        resp = requests.get(
+            f"{config.app_url}/api/v1/playbooks",
+            headers=config.auth_header,
+            params={"techniques": ",".join(technique_ids)},
+            timeout=15,
+        )
+        resp.raise_for_status()
+        return resp.json()
+    except Exception as e:
+        console.print(f"[yellow]Warning: platform playbook fetch failed:[/yellow] {e}")
+        return {}
+
+
 def generate_local_plan(evidence_text: str) -> Plan | None:
     library = LocalSkillsLibrary()
     if not library.available:
@@ -219,10 +354,39 @@ def generate_local_plan(evidence_text: str) -> Plan | None:
         console.print("[dim]Run: docker compose up casky-skills[/dim]")
         return None
 
-    classifier_prompt = f"""You are a security investigation planner. Given the evidence below, select 5-8 skills from the skills library that best address the investigation.
+    console.print("[dim]Phase A: Extracting entities…[/dim]")
+    entities = extract_entities(evidence_text)
+
+    console.print("[dim]Phase B: Enriching with CVE data…[/dim]")
+    cve_enrichment = asyncio.run(enrich_with_cve_mcp(entities.cve_ids))
+    if config.api_key and entities.cve_ids:
+        platform_cves = fetch_platform_cve_spotlights(entities.cve_ids)
+        if platform_cves:
+            cve_enrichment.update(platform_cves)
+
+    console.print("[dim]Phase C: Finding similar plans & playbooks…[/dim]")
+    similar_plans = find_similar_local_plans(evidence_text)
+    playbooks = fetch_platform_playbooks(entities.technique_ids) if config.api_key else {}
+
+    enrichment_context = ""
+    if entities.cve_ids:
+        enrichment_context += f"Detected CVEs: {', '.join(entities.cve_ids)}\n"
+        if cve_enrichment:
+            enrichment_context += f"CVE enrichment available: {json.dumps(cve_enrichment)[:200]}…\n"
+    if entities.technique_ids:
+        enrichment_context += f"Detected MITRE Techniques: {', '.join(entities.technique_ids)}\n"
+    if similar_plans:
+        enrichment_context += f"Similar plans in history: {len(similar_plans)}\n"
+    if playbooks:
+        enrichment_context += f"Matching playbooks available\n"
+
+    classifier_prompt = f"""You are a security investigation planner. Given the evidence and context below, select 5-8 skills from the skills library that best address the investigation.
 
 EVIDENCE:
 {evidence_text}
+
+CONTEXT:
+{enrichment_context or '(No additional context)'}
 
 AVAILABLE SKILLS (slug | subdomain | description):
 {library.subdomain_summary()}
@@ -235,24 +399,21 @@ Return ONLY a JSON array, no explanation. Each item:
   "technique_name": "...",
   "rationale": "...",
   "evidence_focus": "...",
-  "step_order": 1
+  "step_order": 1,
+  "confidence": 0.95,
+  "evidence_gaps": ["gap1", "gap2"]
 }}"""
 
     try:
-        result = subprocess.run(
-            ["claude", "--print"],
-            input=classifier_prompt,
-            capture_output=True,
-            text=True,
-            timeout=60,
+        console.print("[dim]Phase D: Classifying with Haiku…[/dim]")
+        client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+        response = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=2048,
+            messages=[{"role": "user", "content": classifier_prompt}]
         )
 
-        if result.returncode != 0:
-            console.print(f"[red]Classifier failed:[/red] {result.stderr}")
-            return None
-
-        output = result.stdout
-        # Strip markdown code fences if present
+        output = response.content[0].text
         if output.startswith("```"):
             output = "\n".join(output.split("\n")[1:])
         if output.endswith("```"):
@@ -264,6 +425,9 @@ Return ONLY a JSON array, no explanation. Each item:
             return None
 
         steps: list[Step] = []
+        confidence_scores = []
+        evidence_gaps = []
+
         for item in selected_skills:
             slug = item.get("skill_slug", "")
             subdomain = item.get("skill_category", "")
@@ -284,6 +448,26 @@ Return ONLY a JSON array, no explanation. Each item:
                 step_order=item.get("step_order", len(steps) + 1),
             ))
 
+            confidence_scores.append(item.get("confidence", 0.0))
+            if item.get("evidence_gaps"):
+                evidence_gaps.extend(item.get("evidence_gaps", []))
+
+        cve_refs = []
+        if cve_enrichment and isinstance(cve_enrichment, dict):
+            for cve_id in entities.cve_ids:
+                if cve_id in cve_enrichment:
+                    cve_data = cve_enrichment[cve_id]
+                    cve_refs.append(CveEnrichment(
+                        cve_id=cve_id,
+                        cvss_score=cve_data.get("cvss_score"),
+                        cvss_severity=cve_data.get("cvss_severity", ""),
+                        is_kev=cve_data.get("is_kev", False),
+                        technique_ids=cve_data.get("technique_ids", []),
+                        skill_ids=cve_data.get("skill_ids", []),
+                    ))
+
+        avg_confidence = sum(confidence_scores) / len(confidence_scores) if confidence_scores else 0.0
+
         plan = Plan(
             id=str(uuid.uuid4()),
             domain=evidence_text[:50] if evidence_text else "Local Investigation",
@@ -291,6 +475,9 @@ Return ONLY a JSON array, no explanation. Each item:
             status="approved",
             steps=steps,
             created_at=datetime.now().isoformat(),
+            cve_references=cve_refs,
+            evidence_gaps=list(set(evidence_gaps)),
+            confidence=avg_confidence,
         )
 
         config.plans_dir.mkdir(parents=True, exist_ok=True)
@@ -301,6 +488,19 @@ Return ONLY a JSON array, no explanation. Each item:
             "evidence_text": plan.evidence_text,
             "status": plan.status,
             "created_at": plan.created_at,
+            "cve_references": [
+                {
+                    "cve_id": r.cve_id,
+                    "cvss_score": r.cvss_score,
+                    "cvss_severity": r.cvss_severity,
+                    "is_kev": r.is_kev,
+                    "technique_ids": r.technique_ids,
+                    "skill_ids": r.skill_ids,
+                }
+                for r in plan.cve_references
+            ],
+            "evidence_gaps": plan.evidence_gaps,
+            "confidence": plan.confidence,
             "investigation_steps": [
                 {
                     "id": s.id,
@@ -319,11 +519,11 @@ Return ONLY a JSON array, no explanation. Each item:
         }
         plan_file.write_text(json.dumps(plan_data, indent=2))
         console.print(f"[green]Plan saved:[/green] {plan_file}")
+        console.print(f"[green]Confidence:[/green] {avg_confidence:.1%}")
+        if plan.evidence_gaps:
+            console.print(f"[yellow]Evidence gaps:[/yellow] {', '.join(plan.evidence_gaps[:3])}")
         return plan
 
-    except subprocess.TimeoutExpired:
-        console.print("[red]Classifier timed out[/red]")
-        return None
     except json.JSONDecodeError as e:
         console.print(f"[red]Failed to parse classifier response:[/red] {e}")
         return None
@@ -458,6 +658,19 @@ class PlatformClient:
             )
             for i, s in enumerate(data.get("investigation_steps", []))
         ]
+
+        cve_refs = [
+            CveEnrichment(
+                cve_id=r.get("cve_id", ""),
+                cvss_score=r.get("cvss_score"),
+                cvss_severity=r.get("cvss_severity", ""),
+                is_kev=r.get("is_kev", False),
+                technique_ids=r.get("technique_ids", []),
+                skill_ids=r.get("skill_ids", []),
+            )
+            for r in data.get("cve_references", [])
+        ]
+
         return Plan(
             id=data.get("id", ""),
             domain=data.get("domain", ""),
@@ -465,6 +678,9 @@ class PlatformClient:
             status=data.get("status", ""),
             steps=steps,
             created_at=data.get("created_at", ""),
+            cve_references=cve_refs,
+            evidence_gaps=data.get("evidence_gaps", []),
+            confidence=data.get("confidence", 0.0),
         )
 
 

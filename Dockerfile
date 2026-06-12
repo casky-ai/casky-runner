@@ -35,9 +35,9 @@ RUN groupadd --gid 1001 casky \
     && groupadd -f docker \
     && usermod -aG docker casky
 
-# Agentic harness — Python venv with rich + requests for the terminal UI
+# Agentic harness — Python venv with rich + requests + mcp + anthropic
 RUN python3 -m venv /opt/casky-console \
-    && /opt/casky-console/bin/pip install --no-cache-dir rich requests
+    && /opt/casky-console/bin/pip install --no-cache-dir rich requests mcp anthropic
 
 # Report output directory (persisted via volume mount in docker-compose)
 RUN mkdir -p /var/casky/reports && chmod 777 /var/casky/reports

@@ -24,6 +24,9 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - id: date
+        run: echo "date=$(date +%Y%m%d)" >> $GITHUB_OUTPUT
+
       - uses: docker/build-push-action@v5
         with:
           context: .
@@ -33,6 +36,3 @@ jobs:
             ghcr.io/casky-ai/skills-library:latest
             ghcr.io/casky-ai/skills-library:${{ github.run_id }}
             ghcr.io/casky-ai/skills-library:${{ steps.date.outputs.date }}
-
-      - id: date
-        run: echo "date=$(date +%Y%m%d)" >> $GITHUB_OUTPUT
