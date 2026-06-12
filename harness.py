@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import subprocess
 import sys
 import threading
 import uuid
@@ -89,6 +90,7 @@ class Config:
     lab_name: str = field(default_factory=lambda: os.environ.get("SKILL_LAB_NAME", "skill-lab"))
     concurrency: int = field(default_factory=lambda: int(os.environ.get("CASKY_CONCURRENCY", "4")))
     plans_dir: Path = field(default_factory=lambda: Path.home() / ".casky" / "plans")
+    skills_library_path: Path = field(default_factory=lambda: Path(os.environ.get("SKILLS_LIBRARY_PATH", "/opt/skills-library")))
 
     @property
     def is_local_mode(self) -> bool:
@@ -100,6 +102,234 @@ class Config:
 
 
 config = Config()
+
+
+# ── Skills library access ─────────────────────────────────────────────────────
+
+SUBDOMAIN_TO_CATEGORY = {
+    # Cloud
+    "cloud-security": "cloud",
+    "container-security": "cloud",
+    # Identity
+    "identity-access-management": "identity",
+    "identity-and-access-management": "identity",
+    "identity-security": "identity",
+    "active-directory": "identity",
+    # Web
+    "web-application-security": "web-app",
+    "api-security": "web-app",
+    "application-security": "appsec",
+    # Network
+    "network-security": "network",
+    "wireless-security": "network",
+    "zero-trust": "network",
+    "zero-trust-architecture": "network",
+    # Vulnerability
+    "vulnerability-management": "vuln-scan",
+    "vulnerability-assessment": "vuln-scan",
+    # Threat Intel
+    "threat-intelligence": "threat-intel",
+    "threat-hunting": "threat-hunting",
+    "threat-detection": "threat-hunting",
+    "ransomware-defense": "threat-hunting",
+    # Incident Response
+    "incident-response": "incident-response",
+    "soc-operations": "incident-response",
+    "security-operations": "incident-response",
+    # Forensics
+    "digital-forensics": "forensics",
+    "firmware-analysis": "forensics",
+    "malware-analysis": "malware",
+    "endpoint-security": "forensics",
+    # OSINT/Recon
+    "osint": "osint",
+    "reconnaissance": "recon",
+    "open-source-intelligence": "osint",
+    # Post-Exploit
+    "post-exploitation": "post-exploit",
+    "persistence": "post-exploit",
+    "lateral-movement": "post-exploit",
+    # Exploit
+    "exploitation": "exploitation",
+    "offensive-security": "exploitation",
+    "red-teaming": "exploitation",
+    "red-team": "exploitation",
+    "penetration-testing": "exploitation",
+    # Detection
+    "detection-engineering": "detection",
+    "devsecops": "devsecops",
+    # Other security domains map to recon as fallback
+    "blockchain-security": "recon",
+    "cryptography": "recon",
+    "data-protection": "recon",
+    "deception-technology": "recon",
+    "firmware-security": "recon",
+    "governance-risk-compliance": "recon",
+    "compliance-governance": "recon",
+    "ai-security": "recon",
+    "mobile-security": "recon",
+    "ot-ics-security": "recon",
+    "ot-security": "recon",
+    "phishing-defense": "recon",
+    "privacy-compliance": "recon",
+    "purple-team": "recon",
+    "social-engineering-defense": "recon",
+    "supply-chain-security": "recon",
+}
+
+
+class LocalSkillsLibrary:
+    def __init__(self, path: Path | None = None) -> None:
+        self.path = path or config.skills_library_path
+        self._index: list[dict] | None = None
+
+    @property
+    def available(self) -> bool:
+        return (self.path / "index.json").exists()
+
+    def load_index(self) -> list[dict]:
+        if self._index is None:
+            try:
+                with open(self.path / "index.json") as f:
+                    data = json.load(f)
+                self._index = data.get("skills", [])
+            except Exception as e:
+                console.print(f"[red]Error loading skills index:[/red] {e}")
+                self._index = []
+        return self._index
+
+    def get_skill_document(self, slug: str) -> str:
+        p = self.path / "skills" / slug / "SKILL.md"
+        return p.read_text() if p.exists() else ""
+
+    def get_agent_script(self, slug: str) -> Path:
+        return self.path / "skills" / slug / "scripts" / "agent.py"
+
+    def subdomain_summary(self) -> str:
+        lines = []
+        for s in self.load_index():
+            lines.append(f'{s["name"]} ({s.get("subdomain", "")}) — {s.get("description", "")[:80]}')
+        return "\n".join(lines[:800])
+
+
+def generate_local_plan(evidence_text: str) -> Plan | None:
+    library = LocalSkillsLibrary()
+    if not library.available:
+        console.print("[red]Skills library not found at {library.path}[/red]")
+        console.print("[dim]Run: docker compose up casky-skills[/dim]")
+        return None
+
+    classifier_prompt = f"""You are a security investigation planner. Given the evidence below, select 5-8 skills from the skills library that best address the investigation.
+
+EVIDENCE:
+{evidence_text}
+
+AVAILABLE SKILLS (slug | subdomain | description):
+{library.subdomain_summary()}
+
+Return ONLY a JSON array, no explanation. Each item:
+{{
+  "skill_slug": "...",
+  "skill_category": "...",
+  "technique_id": "T1234",
+  "technique_name": "...",
+  "rationale": "...",
+  "evidence_focus": "...",
+  "step_order": 1
+}}"""
+
+    try:
+        result = subprocess.run(
+            ["claude", "--print"],
+            input=classifier_prompt,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+
+        if result.returncode != 0:
+            console.print(f"[red]Classifier failed:[/red] {result.stderr}")
+            return None
+
+        output = result.stdout
+        # Strip markdown code fences if present
+        if output.startswith("```"):
+            output = "\n".join(output.split("\n")[1:])
+        if output.endswith("```"):
+            output = "\n".join(output.split("\n")[:-1])
+
+        selected_skills = json.loads(output.strip())
+        if not isinstance(selected_skills, list):
+            console.print("[red]Classifier returned non-array response[/red]")
+            return None
+
+        steps: list[Step] = []
+        for item in selected_skills:
+            slug = item.get("skill_slug", "")
+            subdomain = item.get("skill_category", "")
+            category = SUBDOMAIN_TO_CATEGORY.get(subdomain, "recon")
+            if subdomain and subdomain not in SUBDOMAIN_TO_CATEGORY:
+                console.print(f"[yellow]Warning: unknown subdomain '{subdomain}', using 'recon'[/yellow]")
+
+            skill_document = library.get_skill_document(slug)
+            steps.append(Step(
+                id=str(uuid.uuid4()),
+                skill_slug=slug,
+                skill_category=category,
+                skill_document=skill_document,
+                technique_id=item.get("technique_id", ""),
+                technique_name=item.get("technique_name", ""),
+                rationale=item.get("rationale", ""),
+                evidence_focus=item.get("evidence_focus", ""),
+                step_order=item.get("step_order", len(steps) + 1),
+            ))
+
+        plan = Plan(
+            id=str(uuid.uuid4()),
+            domain=evidence_text[:50] if evidence_text else "Local Investigation",
+            evidence_text=evidence_text,
+            status="approved",
+            steps=steps,
+            created_at=datetime.now().isoformat(),
+        )
+
+        config.plans_dir.mkdir(parents=True, exist_ok=True)
+        plan_file = config.plans_dir / f"{plan.id}.json"
+        plan_data = {
+            "id": plan.id,
+            "domain": plan.domain,
+            "evidence_text": plan.evidence_text,
+            "status": plan.status,
+            "created_at": plan.created_at,
+            "investigation_steps": [
+                {
+                    "id": s.id,
+                    "skill_slug": s.skill_slug,
+                    "skill_category": s.skill_category,
+                    "skill_document": s.skill_document,
+                    "technique_id": s.technique_id,
+                    "technique_name": s.technique_name,
+                    "rationale": s.rationale,
+                    "evidence_focus": s.evidence_focus,
+                    "step_order": s.step_order,
+                    "status": s.status,
+                }
+                for s in plan.steps
+            ],
+        }
+        plan_file.write_text(json.dumps(plan_data, indent=2))
+        console.print(f"[green]Plan saved:[/green] {plan_file}")
+        return plan
+
+    except subprocess.TimeoutExpired:
+        console.print("[red]Classifier timed out[/red]")
+        return None
+    except json.JSONDecodeError as e:
+        console.print(f"[red]Failed to parse classifier response:[/red] {e}")
+        return None
+    except Exception as e:
+        console.print(f"[red]Error generating plan:[/red] {e}")
+        return None
 
 
 # ── Local report server ───────────────────────────────────────────────────────
@@ -449,6 +679,14 @@ class HarnessUI:
             border_style="cyan",
         ))
 
+    def ask_plan_source(self) -> str:
+        console.print("\n[cyan]Plan Source[/cyan]")
+        console.print("  [bold]g[/bold]  Generate new plan from evidence (requires skills library)")
+        console.print("  [bold]p[/bold]  Load plan from platform")
+        console.print("  [bold]l[/bold]  Load local plan file")
+        choice = Prompt.ask("Choose", choices=["g", "p", "l"], default="l", console=console)
+        return choice
+
     def show_plan_list_platform(self, plans: list[Plan]) -> Plan | None:
         if not plans:
             console.print("[yellow]No approved or running investigation plans found.[/yellow]")
@@ -637,13 +875,49 @@ def main() -> None:
     console.print()
 
     client = PlatformClient()
-
-    # Plan selection
     plan: Plan | None = None
+
+    # Check for plan generation or selection
     if config.is_local_mode:
-        local_plans = client.list_local_plans()
-        plan = ui.show_plan_list_local(local_plans)
+        source = ui.ask_plan_source()
+        console.print()
+
+        if source == "g":
+            # Generate plan from evidence
+            console.print("[cyan]Enter evidence text (Ctrl+D when done):[/cyan]")
+            try:
+                lines = []
+                while True:
+                    line = input()
+                    lines.append(line)
+            except EOFError:
+                pass
+            evidence_text = "\n".join(lines)
+
+            if not evidence_text.strip():
+                console.print("[yellow]No evidence provided.[/yellow]")
+                sys.exit(0)
+
+            console.print("\n[dim]Generating plan with Haiku classifier…[/dim]")
+            plan = generate_local_plan(evidence_text)
+            if plan is None:
+                sys.exit(1)
+
+        elif source == "p":
+            # Load from platform
+            try:
+                platform_plans = client.list_plans()
+            except RuntimeError as exc:
+                console.print(f"[red]Error:[/red] {exc}")
+                sys.exit(1)
+            plan = ui.show_plan_list_platform(platform_plans)
+
+        else:
+            # Load local plan file
+            local_plans = client.list_local_plans()
+            plan = ui.show_plan_list_local(local_plans)
     else:
+        # Platform mode — always load from platform
         try:
             platform_plans = client.list_plans()
         except RuntimeError as exc:

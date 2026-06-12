@@ -47,6 +47,101 @@ Casky Box is a **human-in-the-loop investigation platform** where you guide the 
 
 ---
 
+## Pre-Investigation Setup
+
+### Required: Set your ANTHROPIC_API_KEY
+
+Before starting any investigations, you must configure your Claude API key:
+
+```bash
+cd casky-runner
+
+# Create .env.local if not already done
+cp .env.example .env.local
+
+# Edit with your editor (nano, vi, VSCode, etc.)
+nano .env.local
+```
+
+Add this line:
+```
+ANTHROPIC_API_KEY=sk-ant-v3-YOUR_KEY_HERE
+```
+
+Save and close the file. All subsequent `docker compose` commands should use:
+```bash
+docker compose --env-file .env.local up runner -d
+```
+
+Or set it directly:
+```bash
+export ANTHROPIC_API_KEY=sk-ant-v3-YOUR_KEY_HERE
+docker compose up runner -d
+```
+
+---
+
+## Step 0: Generate a Plan from Evidence (2-5 minutes, optional)
+
+If you prefer to let the Haiku classifier select skills for you, you can generate an investigation plan automatically:
+
+### 0a. Start the harness in plan generation mode
+
+```bash
+docker exec -it casky-runner casky harness
+```
+
+The harness will display a welcome screen and ask:
+```
+Plan Source
+  g  Generate new plan from evidence (requires skills library)
+  p  Load plan from platform
+  l  Load local plan file
+
+Choose [default: l]:
+```
+
+Choose `g` to generate a new plan.
+
+### 0b. Paste your evidence
+
+```
+Paste your reconnaissance output or describe what you found.
+For example:
+
+Target: OWASP Juice Shop
+Evidence:
+- Server: Node.js / Express
+- Framework headers: X-Powered-By: Express
+- No WAF detected
+- Default credentials suspected
+- SQL injection endpoints identified
+
+(Press Ctrl+D when done)
+```
+
+The harness will:
+1. Call the Haiku classifier with the evidence + 754-skill library summary
+2. Automatically select 5-8 relevant skills
+3. Load the full SKILL.md documentation for each skill
+4. Save the plan as a JSON file in `~/.casky/plans/`
+5. Display the plan for your approval
+
+### 0c. Review and select steps
+
+After generation, you'll see a table of selected steps (skills):
+```
+Investigation Steps — Target Summary
+# | Technique                 | Skill                    | Category  | Status
+1 | T1595 Active Scanning     | nmap-web-recon           | web-app   | pending
+2 | T1595.003 Wordlist Scan   | ffuf-directory-enumerat. | web-app   | pending
+...
+```
+
+Press `Enter` to run all steps, or enter step numbers (e.g., `1,3,5`) to run specific steps.
+
+---
+
 ## Step 1: Evidence Gathering (5 minutes)
 
 ### 1a. Start the lab environment

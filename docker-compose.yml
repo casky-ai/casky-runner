@@ -2,6 +2,16 @@ name: casky-box
 
 services:
 
+  # ── Skills Library (init container) ──────────────────────────────────────────
+  # Populates casky-skills-data volume with 754-skill security library.
+  # Runs once and exits. Other containers depend on this completing.
+  casky-skills:
+    image: ghcr.io/casky-ai/skills-library:latest
+    container_name: casky-skills
+    volumes:
+      - casky-skills-data:/opt/skills-library
+    restart: "no"
+
   # ── AI runner ────────────────────────────────────────────────────────────────
   # Claude Code + Gemini CLI + agentic harness.
   # Usage (single skill):   docker exec -it casky-runner casky run web-app
@@ -14,6 +24,11 @@ services:
     container_name: casky-runner
     restart: unless-stopped
     user: root
+    depends_on:
+      casky-skills:
+        condition: service_completed_successfully
+      db:
+        condition: service_healthy
     environment:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
       GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
@@ -26,6 +41,7 @@ services:
       CASKY_RUN_ID: ${CASKY_RUN_ID:-}
       CASKY_TOKEN: ${CASKY_TOKEN:-}
       SKILL_LAB_NAME: ${SKILL_LAB_NAME:-skill-lab}
+      SKILLS_LIBRARY_PATH: ${SKILLS_LIBRARY_PATH:-/opt/skills-library}
       # CVE MCP Server API keys — inherited by the cve_mcp.server subprocess.
       # Only NVD + EPSS + CISA KEV are used without keys (free, no config needed).
       NVD_API_KEY: ${NVD_API_KEY:-}
@@ -42,6 +58,7 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - casky-reports:/var/casky/reports    # persist findings between runs
+      - casky-skills-data:/opt/skills-library:ro   # skills library (read-only)
     networks:
       - casky-internal
     healthcheck:
@@ -80,6 +97,8 @@ services:
     container_name: skill-lab
     restart: unless-stopped
     command: sleep infinity
+    volumes:
+      - casky-skills-data:/opt/skills-library:ro   # skills library (read-only) for agent.py scripts
     networks:
       - casky-lab
     # No internet access for the skill container — it scans the target only
@@ -162,4 +181,5 @@ networks:
 volumes:
   casky-db-data:
   casky-reports:    # persistent findings storage for local mode
+  casky-skills-data:  # skills library shared by runner and skill-lab
   casky-target-db:  # MySQL database for DVWA target

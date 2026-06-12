@@ -112,6 +112,51 @@ Do NOT enter either container interactively.${REPORT_SECTION}"
     echo "PASS: all $PASS tools present in $CONTAINER ($CATEGORY)"
     ;;
 
+  skills)
+    # casky skills list [subdomain]
+    # casky skills show <slug>
+    # casky skills verify <slug>
+    SKILLS_PATH="${SKILLS_LIBRARY_PATH:-/opt/skills-library}"
+    [[ ! -d "$SKILLS_PATH" ]] && { echo "Skills library not found at $SKILLS_PATH"; exit 1; }
+
+    SUBCOMMAND="${1:-list}"
+    case "$SUBCOMMAND" in
+      list)
+        SUBDOMAIN_FILTER="${2:-}"
+        if [[ ! -f "$SKILLS_PATH/index.json" ]]; then
+          echo "Skills index not found. Run: docker compose up casky-skills"
+          exit 1
+        fi
+        if [[ -z "$SUBDOMAIN_FILTER" ]]; then
+          jq -r '.skills[] | "\(.name) (\(.subdomain)) — \(.description)"' "$SKILLS_PATH/index.json"
+        else
+          jq -r ".skills[] | select(.subdomain == \"$SUBDOMAIN_FILTER\") | \"\(.name) (\(.subdomain)) — \(.description)\"" "$SKILLS_PATH/index.json"
+        fi
+        ;;
+      show)
+        SLUG="${2:-}"
+        [[ -z "$SLUG" ]] && { echo "Usage: casky skills show <slug>"; exit 1; }
+        SKILL_MD="$SKILLS_PATH/skills/$SLUG/SKILL.md"
+        [[ ! -f "$SKILL_MD" ]] && { echo "Skill not found: $SLUG"; exit 1; }
+        cat "$SKILL_MD"
+        ;;
+      verify)
+        SLUG="${2:-}"
+        [[ -z "$SLUG" ]] && { echo "Usage: casky skills verify <slug>"; exit 1; }
+        AGENT_SCRIPT="$SKILLS_PATH/skills/$SLUG/scripts/agent.py"
+        [[ ! -f "$AGENT_SCRIPT" ]] && { echo "Agent script not found: $SLUG"; exit 1; }
+        CONTAINER="${SKILL_LAB_NAME:-skill-lab}"
+        if docker exec "$CONTAINER" python3 -c "import sys; sys.exit(0)" 2>/dev/null; then
+          echo "  ✓ Skill '$SLUG' agent.py exists and skill-lab has python3"
+        else
+          echo "  ✗ Skill-lab container '$CONTAINER' not available or no python3"
+          exit 1
+        fi
+        ;;
+      *) echo "Usage: casky skills {list|show|verify}"; exit 1 ;;
+    esac
+    ;;
+
   harness)
     # casky harness
     #
@@ -140,19 +185,29 @@ Do NOT enter either container interactively.${REPORT_SECTION}"
     echo "  casky verify <category>"
     echo "      Check the skill container has all required tools for <category>."
     echo ""
+    echo "  casky skills list [subdomain]"
+    echo "      List available skills, optionally filtered by subdomain."
+    echo ""
+    echo "  casky skills show <slug>"
+    echo "      Show the SKILL.md documentation for a skill."
+    echo ""
+    echo "  casky skills verify <slug>"
+    echo "      Verify that a skill's agent.py is accessible and skill-lab has python3."
+    echo ""
     echo "Skill image categories:"
     echo "  forensics  malware  threat-intel  threat-hunting  network  cloud"
     echo "  web-app    vuln-scan  exploitation  post-exploit  incident-response"
     echo "  detection  osint  recon  identity  active-directory  appsec  devsecops"
     echo ""
     echo "Env vars:"
-    echo "  ANTHROPIC_API_KEY    for Claude Code (required)"
-    echo "  CASKY_API_KEY        Casky Runner Token — enables platform mode in harness"
-    echo "  CASKY_APP_URL        platform URL (default: https://app.casky.ai)"
-    echo "  CASKY_LOCAL_PORT     local report server port (default: 8765)"
-    echo "  GOOGLE_API_KEY       for Gemini CLI (optional)"
-    echo "  SKILL_LAB_NAME       skill container name (default: skill-lab)"
-    echo "  CASKY_RUN_ID         single-run platform link (optional, for casky run)"
-    echo "  CASKY_TOKEN          single-run sandbox JWT (optional, for casky run)"
+    echo "  ANTHROPIC_API_KEY      for Claude Code (required)"
+    echo "  CASKY_API_KEY          Casky Runner Token — enables platform mode in harness"
+    echo "  CASKY_APP_URL          platform URL (default: https://app.casky.ai)"
+    echo "  CASKY_LOCAL_PORT       local report server port (default: 8765)"
+    echo "  SKILLS_LIBRARY_PATH    path to skills library (default: /opt/skills-library)"
+    echo "  GOOGLE_API_KEY         for Gemini CLI (optional)"
+    echo "  SKILL_LAB_NAME         skill container name (default: skill-lab)"
+    echo "  CASKY_RUN_ID           single-run platform link (optional, for casky run)"
+    echo "  CASKY_TOKEN            single-run sandbox JWT (optional, for casky run)"
     ;;
 esac

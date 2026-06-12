@@ -19,7 +19,7 @@ Run structured security investigations locally using the Casky Box (casky-runner
 - `ANTHROPIC_API_KEY` (Claude Code API key)
 - Optional: `CASKY_TOKEN` (JWT from app.casky.ai workspace) for platform integration
 
-## 1. Clone and configure
+## 1. Clone and configure environment
 
 ```bash
 git clone https://github.com/casky-ai/casky-runner
@@ -27,27 +27,54 @@ cd casky-runner
 cp .env.example .env.local
 ```
 
-Edit `.env.local` — required:
-```
-ANTHROPIC_API_KEY=sk-ant-v3-...
+**Edit `.env.local`** — required (open with your editor):
+```bash
+nano .env.local
+# OR
+vi .env.local
 ```
 
-Optional — for platform integration:
+Add your API key:
 ```
-CASKY_TOKEN=eyJhbGc...           # JWT from workspace settings
-CASKY_RUN_ID=550e8400-e29b...    # UUID linking findings to platform run
+ANTHROPIC_API_KEY=sk-ant-v3-YOUR_KEY_HERE
+```
+
+**Optional** — for platform integration:
+```
+CASKY_API_KEY=csk_...            # Casky platform API key (for platform mode)
 CASKY_APP_URL=https://app.casky.ai
-SKILL_LAB_NAME=skill-lab         # Name of skill container
 ```
 
-## 2. Choose and start a target
+**Note:** The runner container reads `ANTHROPIC_API_KEY` from the environment. Make sure it's set in `.env.local` before starting containers with `--env-file .env.local`.
+
+## 2. Populate the skills library (one-time setup)
+
+Before starting the investigation, download the 754-skill security library:
+
+```bash
+# Pull the latest skills library image
+docker compose pull casky-skills
+
+# Populate the shared volume (one-time, ~30 seconds)
+docker compose up casky-skills
+```
+
+Expected output:
+```
+casky-skills  | Skills library ready: 754 skills
+casky-skills exited with code 0
+```
+
+Re-run these commands anytime you want to update the skills library to the latest version.
+
+## 3. Choose and start a target
 
 Pick one of three target options:
 
 ### Option A: DVWA (Damn Vulnerable Web App) — Full multi-vulnerability investigation
 
 ```bash
-docker compose --profile lab-dvwa --env-file .env.local up -d
+docker compose --profile lab-dvwa --env-file .env.local up -d runner db skill-lab target-dvwa target-db
 ```
 
 **Starts:**
@@ -62,7 +89,7 @@ docker compose --profile lab-dvwa --env-file .env.local up -d
 ### Option B: OWASP Juice Shop — Self-contained, no database setup
 
 ```bash
-docker compose --profile lab-juice-shop --env-file .env.local up -d
+docker compose --profile lab-juice-shop --env-file .env.local up -d runner db skill-lab target-juice-shop
 ```
 
 **Starts:**
@@ -75,7 +102,7 @@ docker compose --profile lab-juice-shop --env-file .env.local up -d
 
 ```bash
 export TARGET_IMAGE=your-custom:latest
-docker compose --profile lab-custom --env-file .env.local up -d
+docker compose --profile lab-custom --env-file .env.local up -d runner db skill-lab target-custom
 ```
 
 **Requirements:**
@@ -110,7 +137,22 @@ docker exec skill-lab curl -s -I http://target/ | head -3
 
 Should see `HTTP/1.1 200` or `302 Found`.
 
-## 4. Interactive guided investigation workflow
+## 4. Browse the skills library
+
+You can explore available skills before starting an investigation:
+
+```bash
+# List all skills
+docker exec casky-runner casky skills list
+
+# List skills in a specific domain (e.g., cloud-security)
+docker exec casky-runner casky skills list cloud-security
+
+# View the full documentation for a skill
+docker exec casky-runner casky skills show detecting-aws-cloudtrail-anomalies
+```
+
+## 5. Interactive guided investigation workflow
 
 This is a **human-in-the-loop** investigation where Claude guides you step-by-step through each skill.
 
