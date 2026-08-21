@@ -1,246 +1,173 @@
-# casky-runner
+# Casky Box
 
-The AI runner image for the [Casky](https://casky.ai) platform. Ships Claude Code and Gemini CLI in a minimal Ubuntu container. Drives security exercises and investigations by issuing commands into a skill container via `docker exec`, against a target container on the same isolated Docker network.
-
-**Last Updated:** 2026-06-12  
-**Part of:** Casky v1.1 (May 31 – Jul 9, 2026) · **Phase 2:** CVE enrichment + upstream sync
-
-```
-┌────────────────────────────────────────────────────────────────────┐
-│  Casky Platform (casky.ai)                                         │
-│  ├─ Evidence-first investigation entry point (/investigate)        │
-│  ├─ Context Graph assembly (CVE Watch, Playbooks, History)        │
-│  ├─ Investigation Plan generation + review                        │
-│  └─ CISO report synthesis                                         │
-└────┬────────────────────────────────────────────────────────────────┘
-     │ Triggers skilled runs (Evidence mode)
-     │
-┌────┴────────────────────────────────────────────────────────────────┐
-│  Casky Box: Local Execution (casky-runner + docker-compose)        │
-│                                                                    │
-│  Docker host (your laptop or CI runner)                           │
-│  │                                                                │
-│  ├── casky-lab ─── isolated bridge network                        │
-│  │   ├── casky-runner (Claude Code + Gemini + Phase 2 pipeline)  │
-│  │   │   ├─ Phase A: Entity extraction (CVE IDs, T-codes, IPs)   │
-│  │   │   ├─ Phase B: CVE enrichment (MCP SDK + platform API)     │
-│  │   │   ├─ Phase C: Historical similarity + playbooks            │
-│  │   │   └─ Phase D: Haiku classifier (Anthropic SDK)            │
-│  │   ├── casky-mcp (CVE MCP server — stdio access)               │
-│  │   ├── skill container ghcr.io/casky-ai/skills/<name>:latest  │
-│  │   └── target container ghcr.io/casky-ai/targets/<name>:latest│
-│  │                                                                │
-│  ├── Upstream sync (daily 06:30 UTC)                              │
-│  │   └── Auto-rebuild casky-skills image if upstream changed     │
-│  │                                                                │
-│  └── docker exec ──► findings JSON ──► /api/runs/[id]/report    │
-└────────────────────────────────────────────────────────────────────┘
-```
-
-## What is Casky?
-
-Casky is a **structured security investigation platform**. Unlike traditional AI chat windows, Casky:
-
-1. **Takes raw evidence** — CloudTrail logs, PCAP captures, SIEM exports, or custom artifacts
-2. **Assembles context** — CVE enrichment, playbook matching, historical investigation similarity
-3. **Generates a plan** — ordered skill runs, each mapped to a MITRE technique, with rationale you review before running
-4. **Produces findings** — structured, severity-badged, with remediation steps
-5. **Synthesizes a CISO report** — executive summary, confirmed techniques, prioritized remediation
-
-The **Casky Box** (casky-runner) is how you run investigations **locally** without platform setup, using docker-compose.
-
-## Runner image
+**An open-source, self-hosted security investigation runtime.** Bring your own AI agent, your own
+LLM, and your own database — Casky Box turns raw evidence into a structured, MITRE-mapped
+investigation plan and runs it against your own environment. No account, no cloud dependency, no
+crippled trial mode: everything in this repo runs standalone.
 
 ```
-ghcr.io/casky-ai/box/runner:latest
+Evidence (paste text or point at logs)
+        │
+        ▼
+Entity extraction (CVE IDs, MITRE T-codes, IPs, hostnames)
+        │
+        ▼
+Context adapters (run concurrently, one failing never blocks the others)
+  ├── CveMcpAdapter        — free NVD + EPSS + CISA KEV enrichment (bundled, no API keys required)
+  └── LocalPlaybookAdapter — matches your evidence against a starter playbook library,
+                              optionally reasoning about intent (not just T-code overlap) if
+                              an LLM provider is configured
+        │
+        ▼
+4-stage classifier pipeline (BYO-LLM: Anthropic, OpenAI, Qwen, Kimi, local Ollama/LM Studio/vLLM)
+  TechniqueValidator → SkillSelector → (StepOrderer ∥ EvidenceGap)
+        │
+        ▼
+Investigation plan — ordered skill steps, each with a rationale and a MITRE technique,
+                      persisted locally, never uploaded anywhere unless you opt in
+        │
+        ▼
+Execution (BYO-Agent: Claude Code, Gemini CLI, GitHub Copilot CLI, or any custom agent binary)
+  each step runs against a skill container via `docker exec`, findings come back structured
 ```
 
-## Getting Started: Three Ways to Run Casky
+**Optional, not required:** point `CASKY_API_KEY` at [casky.ai](https://casky.ai) and findings sync
+to a hosted dashboard, get cert/XP tracking, and gain access to Casky's curated CVE dataset and
+cross-customer playbook library. None of that is needed to use this repo for real investigations —
+the local pipeline above is the whole product on its own.
 
-### Option 1: Docker Compose with Target Selection (Recommended)
+---
 
-The easiest way to test Casky Box locally. Choose your target and run:
+## Quickstart
 
 ```bash
-# 1. Clone and navigate
 git clone https://github.com/casky-ai/casky-runner.git
 cd casky-runner
-
-# 2. Copy environment template
 cp .env.example .env
-# Edit .env and add your ANTHROPIC_API_KEY
+# Edit .env — at minimum, set ANTHROPIC_API_KEY (or configure a different provider, see below)
 
-# 3. Choose and start a target (pick ONE):
-
-# ✅ DVWA (full web app vulnerabilities + database)
+# Start the full local stack: runner, skills library, local Postgres, plus a lab target
 docker compose --profile lab-dvwa up -d
 
-# OR
-
-# ✅ OWASP Juice Shop (self-contained, no DB)
-docker compose --profile lab-juice-shop up -d
-
-# OR
-
-# ✅ Custom target (bring your own)
-export TARGET_IMAGE=your-app:latest
-docker compose --profile lab-custom up -d
-
-# 4. Verify target is ready
+# Confirm the target is reachable
 docker exec skill-lab curl -s -I http://target/ | head -3
 
-# 5. Start interactive investigation
+# Run an investigation
 docker exec -it casky-runner casky run web-app
 ```
 
-**What starts (all targets include):**
-- `casky-runner` — Claude Code agent
-- `casky-mcp` — CVE MCP server (auto-registered in Claude)
-- `skill-lab` — security tools (nmap, nuclei, sqlmap, etc.)
-- `casky-target` — your chosen vulnerable app
-- `casky-target-db` — MySQL (DVWA only; auto-initialized)
+That's it — no `CASKY_API_KEY`, no platform account, no waiting on anything external beyond your
+chosen LLM/agent provider.
 
-**Environment variables in `.env`:**
-```bash
-ANTHROPIC_API_KEY=your-api-key-here
-CASKY_RUN_ID=optional-run-uuid  # Links findings to platform
-CASKY_TOKEN=optional-jwt         # JWT for POSTing findings
-SKILL_LAB_NAME=skill-lab         # Skill container name
-CASKY_APP_URL=https://casky.ai   # Platform URL override
-DB_PASSWORD=dvwa                 # MySQL password (DVWA only)
-TARGET_IMAGE=your-app:latest     # Custom target image
-```
+---
 
-**Target Comparison:**
+## Bring Your Own Everything
 
-| Target | Database | Best For | Setup Time |
-|--------|----------|----------|------------|
-| **DVWA** | MySQL (auto) | Full web app assessment (SQLi, XSS, CSRF, auth) | 30s |
-| **Juice Shop** | None (Node.js) | Web app + ecommerce vulns | 10s |
-| **Custom** | Your choice | Your own app or third-party | Varies |
+Casky Box has three independent BYO configuration surfaces. None of them require the others.
 
-### Option 2: Manual Docker (for Integration Testing)
-
-Run each container separately to test specific skills or targets.
+### BYO-Agent — who executes each investigation step
 
 ```bash
-# 1. Create the isolated lab network (once)
-docker network create casky-lab
-
-# 2. Start the target for your exercise (example: DVWA for web-app skill)
-docker run -d --name target \
-  --network casky-lab \
-  ghcr.io/casky-ai/targets/dvwa:latest
-
-# 3. Start the skill container
-docker run -d --name skill-lab \
-  --network casky-lab \
-  ghcr.io/casky-ai/skills/web-app:latest
-
-# 4. Run the AI agent
-docker run --rm \
-  -e ANTHROPIC_API_KEY="<your-key>" \
-  -e CASKY_RUN_ID="<run-id>" \
-  -e CASKY_TOKEN="<token>" \
-  -e SKILL_LAB_NAME=skill-lab \
-  -v /var/run/docker.sock:/var/run/docker.sock \
-  ghcr.io/casky-ai/box/runner:latest \
-  casky run web-app
+casky run web-app --agent claude              # default
+casky run web-app --agent gemini
+casky run web-app --agent copilot              # requires GITHUB_TOKEN (gh copilot auth)
+casky run web-app --agent custom --agent-cmd "my-agent-cli"   # any binary that reads a prompt on stdin
 ```
 
-### Option 3: Platform Integration (Full Workflow)
+### BYO-LLM — which model plans the investigation
 
-Connect your local Casky Box to the **Casky platform** for structured investigations.
+The classifier pipeline (the thing that turns evidence into an ordered plan) is model-agnostic.
+Configure it in `.env`:
 
-**What happens:**
-1. You paste evidence on `casky.ai/investigate`
-2. Platform generates an investigation plan (ordered skill runs)
-3. You approve the plan
-4. Platform creates runs, dispatches to your Casky Box via `POST /api/runs`
-5. Runner executes skills, POSTs findings back to `/api/runs/[id]/report`
-6. Platform assembles findings into a CISO report
-
-**Setup:**
 ```bash
-# 1. Start Casky Box (Option 1 or 2 above)
-
-# 2. In the platform, create a workspace and get a CASKY_TOKEN (JWT)
-
-# 3. Export the token in Casky Box environment
-export CASKY_TOKEN=eyJ...  # JWT from platform
-
-# 4. From the platform, submit evidence at casky.ai/investigate
-# Platform generates a plan and triggers your Casky Box runners
-
-# 5. View findings and CISO report on the platform dashboard
+CASKY_MODEL_PROVIDER=anthropic          # default — uses ANTHROPIC_API_KEY
+# CASKY_MODEL_PROVIDER=openai_compatible
+# CASKY_MODEL_BASE_URL=https://api.openai.com/v1        # or http://localhost:11434/v1 (Ollama),
+#                                                         # http://localhost:1234/v1 (LM Studio),
+#                                                         # any vLLM server's /v1 URL
+# CASKY_MODEL_NAME=gpt-4o-mini
+# CASKY_MODEL_API_KEY=                                    # bearer token, if the endpoint needs one
 ```
 
-## Investigation Workflow
+This is separate from `--agent` above — `--agent` picks which coding agent *executes* a step;
+`CASKY_MODEL_PROVIDER` picks which LLM *generates the plan itself*.
 
-### Step 1: Bring Evidence
-Open `casky.ai/investigate` and either:
-- **Paste text** — CloudTrail logs, SIEM exports, PCAP summaries, policy files
-- **Upload files** — `.log`, `.json`, `.csv`, `.txt`, `.xml` (max 2 MB each)
+### BYO-DB — where investigations are stored
 
-Acknowledge the PII scrubbing checkbox before submitting.
+The bundled `docker compose` stack ships a local Postgres (`db` service, `casky-db` container) with
+zero configuration needed. To point at your own managed Postgres instead — cloud-hosted or
+otherwise — set `DATABASE_URL` in `.env` and skip the bundled `db` service. Investigation data never
+leaves whichever database you configure; nothing is centralized unless you opt into platform sync.
 
-### Step 2: Context Assembly
-Before the AI sees your evidence, Casky assembles context in parallel:
+---
 
-| Engine | Contributes |
-|--------|------------|
-| **CVE Watch** | CVSS, KEV status, MITRE mapping for detected CVEs |
-| **Playbook Library** | Matching investigation playbooks for detected techniques |
-| **Historical Plans** | Similar past investigations from your team (≥0.8 rating) |
+## How a plan actually gets built
 
-If any context engine fails, it contributes a gap message and the others proceed. **Investigations never block.**
+1. **Entity extraction** — pure regex, no LLM call: CVE IDs, MITRE technique IDs, IPs, hostnames.
+2. **Context adapters run concurrently** (`casky_pipeline/adapters/`):
+   - `CveMcpAdapter` wraps the bundled `cve-mcp-server` (stdio, no network config needed) for free
+     NVD + EPSS + CISA KEV enrichment on any detected CVE.
+   - `LocalPlaybookAdapter` matches your evidence against the starter playbook library in
+     `casky_pipeline/playbooks/` (12 playbooks shipped, real MITRE technique coverage — see below
+     on contributing more). By default this matches on technique-ID overlap only, which is fast and
+     free. If you've configured a BYO-LLM provider, it also does a second pass reasoning about
+     whether the evidence's actual narrative matches the playbook's intent — not just coincidental
+     T-code overlap — and records its reasoning on the match.
+   - If either adapter fails (network hiccup, missing dependency, whatever), the investigation
+     **does not stop** — it proceeds with a noted gap instead. This is enforced by
+     `run_adapters()`'s `asyncio.gather(..., return_exceptions=True)` fan-out.
+3. **4-stage classifier pipeline** (`casky_pipeline/pipeline.py`), fed by the context above:
+   - `TechniqueValidator` — confirms which MITRE techniques the evidence actually supports, with
+     specific evidence anchors (not just plausible-sounding guesses)
+   - `SkillSelector` — picks investigation skills constrained to what's actually in your skills
+     library (no invented/hallucinated skill names — this is enforced in code, not just prompted for)
+   - `StepOrderer` and `EvidenceGap` run in parallel — one orders the steps, the other identifies
+     what additional evidence would strengthen the findings
+4. **Plan review** — nothing executes automatically. You see the ordered steps with rationale before
+   anything runs.
+5. **Execution** — each approved step runs via your chosen `--agent`, against a skill container over
+   `docker exec`. Findings come back structured (severity, remediation, MITRE mapping).
 
-### Step 3: Review the Plan
-The platform generates a **structured investigation plan** with:
-- Ordered skill steps
-- Rationale for each step
-- Expected findings per step
-- MITRE technique coverage
+---
 
-**You control the plan.** Remove steps that don't fit. Reorder if needed. Only click Approve when you're ready.
+## Two ways to investigate — and where the lab targets fit in
 
-### Step 4: Runs Execute in Parallel
-Platform dispatches one run per approved step to your Casky Box:
+These are independent, unrelated workflows. Pick whichever matches what you're starting from — you
+don't need both, and nothing wires them together automatically.
+
+**A. Evidence-driven — you already have something to analyze.** A CloudTrail export, a suspicious log
+line, `tshark`/`tcpdump` output from a pcap, analyst notes. Feed it to the classifier and get an
+ordered, MITRE-mapped investigation plan back:
+
+```bash
+docker exec -it casky-runner casky harness -i /var/casky/evidence/yourfile.json   # from a file — see below
+docker exec -it casky-runner casky harness                                       # or paste it interactively
 ```
-/api/runs → POST { run_id, skill_slug, evidence_text }
-                    ↓
-        Casky Box receives run request
-                    ↓
-        casky-runner: docker exec skill-lab <command>
-                    ↓
-        Claude analyzes evidence with skill context
-                    ↓
-        findings JSON → POST /api/runs/[id]/report
-                    ↓
-        Platform dashboard updates live
+
+**No lab target is touched in this path at all.** The classifier only reads the text you give it.
+
+**B. Live target practice — you have nothing yet and want to generate real findings from scratch.**
+`casky run <category>` runs actual security tools (nmap, nuclei, ffuf, ZAP, ...) against a real,
+deliberately-vulnerable web app running in an isolated lab network, no evidence required:
+
+```bash
+docker compose --profile lab-dvwa up -d          # or lab-juice-shop, or lab-custom (see below)
+docker exec skill-lab curl -s -I http://target/  # confirm the target is reachable
+docker exec -it casky-runner casky run web-app
 ```
 
-Each run surfaces **structured findings**: severity-badged, with remediation steps.
+| Profile | Target | Best for |
+|---|---|---|
+| `lab-dvwa` | DVWA (PHP + MySQL) | SQL injection, XSS, CSRF, auth bypass — the default in Quickstart above |
+| `lab-juice-shop` | OWASP Juice Shop (Node.js, no DB) | Same tool set, faster to start, no database to wait on |
+| `lab-custom` | Your own image (`export TARGET_IMAGE=...`) | Anything else — your image just needs to listen on port 80 |
 
-### Step 5: Generate CISO Report
-Click **Generate CISO Report** when all runs complete. The platform synthesizes:
-
-| Section | Content |
-|---------|---------|
-| Executive Summary | What happened, what was confirmed, business impact |
-| Risk Rating | critical / high / medium / low |
-| Confirmed Techniques | MITRE ATT&CK IDs from actual evidence |
-| Key Findings | Table: severity · title · remediation (max 5) |
-| Remediation Actions | Table: priority · action · effort · impact (max 6) |
-| Immediate Next Steps | 2-3 specific actions to take now |
-| Affected Assets | Identifiers from the evidence |
-
-**This is the output you hand to a CISO or attach to a ticket.**
-
-### Step 6: Rate Steps (Feedback Loop)
-Rate each step: **Found something** / **Confirmed nothing** / **Wrong skill** / **Missed something**
-
-High-rated plans (≥0.8 with outcome summary) enter the few-shot pool — future investigations benefit from your team's actual judgments.
+**Combining them yourself.** Nothing does this for you, but it's a legitimate manual pattern: attack a
+lab target live, capture the resulting traffic (`tcpdump` on the `casky-lab` network while you run
+`casky run`), then feed *that* capture back into `casky harness -i` as evidence — a way to close the
+loop from "generate an incident" to "get an investigation plan for it." See
+[`evidence/README.md`](evidence/README.md) for the `-i`/`--input-file` flag, the `./evidence/` bind
+mount, and evidence size limits.
 
 ---
 
@@ -248,24 +175,35 @@ High-rated plans (≥0.8 with outcome summary) enter the few-shot pool — futur
 
 | Command | Description |
 |---|---|
-| `casky run <skill>` | Run a skill exercise with Claude (default) |
-| `casky run <skill> --agent gemini` | Run with Gemini CLI instead |
-| `casky verify <skill>` | Check that the skill container has all required tools |
+| `casky run <skill> [--agent claude\|gemini\|copilot\|custom] [--agent-cmd "<binary>"]` | Run a single skill investigation |
+| `casky verify <skill>` | Check the skill container has all required tools |
+| `casky harness [-i\|--input-file <path>] [--auto]` | Run the full investigation harness (entity extraction → adapters → plan → execution). `-i` reads evidence from a file instead of the interactive paste prompt — drop it in `./evidence/` on the host (bind-mounted read-only to `/var/casky/evidence`, see `docker-compose.yml`) and pass the in-container path. |
 
 ## Environment variables
 
-| Variable | Description |
-|---|---|
-| `ANTHROPIC_API_KEY` | Claude Code API key |
-| `GOOGLE_API_KEY` / `GEMINI_API_KEY` | Gemini CLI API key |
-| `SKILL_LAB_NAME` | Name of the running skill container (default: `skill-lab`) |
-| `CASKY_RUN_ID` | Links findings to a Casky platform run (optional) |
-| `CASKY_TOKEN` | JWT for POSTing findings to the platform (optional) |
-| `CASKY_APP_URL` | Override platform URL (default: `https://app.casky.ai`) |
+| Variable | Purpose | Required? |
+|---|---|---|
+| `ANTHROPIC_API_KEY` | Claude Code agent + default classifier LLM | Required unless using a different `CASKY_MODEL_PROVIDER` |
+| `GOOGLE_API_KEY` / `GEMINI_API_KEY` | Gemini CLI agent | Only if using `--agent gemini` |
+| `GITHUB_TOKEN` | GitHub Copilot CLI agent | Only if using `--agent copilot` |
+| `CASKY_MODEL_PROVIDER` / `CASKY_MODEL_BASE_URL` / `CASKY_MODEL_NAME` / `CASKY_MODEL_API_KEY` | BYO-LLM for the classifier pipeline | Optional — defaults to Anthropic |
+| `DATABASE_URL` | Point at your own Postgres instead of the bundled `db` service | Optional |
+| `SKILL_LAB_NAME` | Name of the running skill container | Optional, default `skill-lab` |
+| `CASKY_APP_URL` | Platform URL override | Optional, only relevant if syncing to casky.ai |
+| `CASKY_API_KEY` | **This is what switches `casky harness` into platform mode** (fetches/syncs investigation plans with casky.ai). Leave unset for fully local/offline use — this is the one that matters for "am I in local or platform mode?" | Optional |
+| `CASKY_RUN_ID` / `CASKY_TOKEN` | A *separate* mechanism from `CASKY_API_KEY` above — links one `casky run <skill>` execution's findings back to a specific platform run via `POST /api/runs/[id]/report`. Not what you need for general plan sync | Optional |
+| `NVD_API_KEY`, `SHODAN_KEY`, `VIRUSTOTAL_KEY`, `GREYNOISE_API_KEY`, etc. | Extra CVE MCP enrichment sources | Optional — NVD + EPSS + CISA KEV work with none of these set |
+
+See `.env.example` for the full annotated list.
+
+---
 
 ## Skills
 
 Each skill maps 1-to-1 to an image in [casky-ai/skill-images](https://github.com/casky-ai/skill-images).
+The underlying skill definitions (817+ skills, MITRE/NIST/OWASP-mapped, Apache 2.0) live in the
+public [Anthropic-Cybersecurity-Skills](https://github.com/mukul975/Anthropic-Cybersecurity-Skills)
+registry.
 
 | Skill name | Skill image | Paired targets |
 |---|---|---|
@@ -288,37 +226,118 @@ Each skill maps 1-to-1 to an image in [casky-ai/skill-images](https://github.com
 | `appsec` | `ghcr.io/casky-ai/skills/appsec` | `vulncode` |
 | `devsecops` | `ghcr.io/casky-ai/skills/devsecops` | — |
 
-Target images are published from [casky-ai/skill-targets](https://github.com/casky-ai/skill-targets) to `ghcr.io/casky-ai/targets/<name>:latest`.
+Target images are published from [casky-ai/skill-targets](https://github.com/casky-ai/skill-targets)
+to `ghcr.io/casky-ai/targets/<name>:latest`.
+
+### Investigation playbooks
+
+`casky_pipeline/playbooks/` ships 12 starter playbooks (credential dumping, cloud IAM privilege
+escalation, web-app SQLi, network lateral movement, Kerberoasting, ransomware triage, and more) —
+see the directory for the full list. Playbooks are plain YAML; contributing new ones is one of the
+highest-leverage ways to help this project (see Contributing below).
+
+---
 
 ## Local development
 
 ```bash
-make build    # build runner image (casky-runner:dev)
-make scan     # Trivy HIGH/CRITICAL scan
-make lint     # shellcheck casky.sh
-make test     # run the integration test harness
-make shell    # bash shell inside the runner
-
-# Run a skill (requires a running skill-lab container)
+make build          # build the runner image (casky-runner:dev)
+make pytest          # run the casky_pipeline unit test suite (adapters, pipeline, llm_providers)
+make test            # pytest + the image-level integration test harness
+make test-compose    # test the full docker-compose stack
+make scan            # Trivy HIGH/CRITICAL scan
+make lint            # shellcheck casky.sh
+make shell           # bash shell inside the runner image
 make run SKILL=web-app AGENT=claude
-
-# Verify tools are present in the skill container
-make verify SKILL=web-app
+make verify SKILL=web-app   # confirm skill-lab has all required tools
 ```
 
-## How it works
+`make pytest` creates a local `.venv` on first run if one doesn't exist (`pytest`,
+`pytest-asyncio`, `anthropic`, `requests`, `pyyaml`, `rich`, `mcp`).
 
-1. The runner, skill, and target containers all start on the `casky-lab` Docker network.
-2. `casky run <category>` reads the skill prompt from **stdin** — paste any `SKILL.md` from the [753-skill registry](https://github.com/casky-ai/casky-runner), then press `Ctrl+D`. The runner appends environment context (which containers are running, how to exec into the skill container) and pipes the combined prompt to Claude Code or Gemini CLI.
-3. The AI agent runs tool commands via `docker exec <skill-container> <cmd>` — it never enters either container interactively.
-4. If `CASKY_RUN_ID` and `CASKY_TOKEN` are set, the agent POSTs findings back to the Casky platform API on completion.
-5. `casky verify <category>` checks every tool listed in `/etc/casky/skills/<category>.tools` exists in the skill container — used in CI to confirm skill images ship the expected toolchain.
+---
+
+## Project layout
+
+```
+casky-runner/
+├── harness.py               Core investigation harness — entity extraction, adapter fan-out,
+│                             pipeline invocation, execution dispatch, local report server
+├── casky.sh                 The `casky` CLI wrapper (run/verify/harness/help)
+├── casky_pipeline/          Context adapters, 4-stage classifier, BYO-LLM provider layer
+│   ├── adapters/            ContextEngineAdapter interface + CveMcpAdapter + LocalPlaybookAdapter
+│   ├── playbooks/            Starter investigation playbook library (YAML)
+│   ├── pipeline.py           TechniqueValidator → SkillSelector → (StepOrderer ∥ EvidenceGap)
+│   ├── llm_providers.py      AnthropicProvider / OpenAICompatibleProvider / build_provider_from_env()
+│   └── tests/                 pytest suite — run via `make pytest`
+├── docker-compose.yml        Full local stack: runner, skills library, Postgres, lab targets
+├── docker/                   Dockerfiles for skill/target/MCP containers
+├── skills/                   Per-skill tool manifests (used by `casky verify`)
+├── tests/                    Shell-based image/compose integration tests
+├── CLAUDE.md                 Guidance for AI coding agents working in this repo
+└── PHASE1_CONTRACT.md        Design record of the casky_pipeline architecture — useful background
+                               if you're extending the adapter/pipeline system
+```
+
+---
+
+## Optional: syncing to the Casky platform
+
+If you want a hosted dashboard, cert/XP tracking, or access to Casky's curated CVE dataset and
+cross-customer playbook library on top of everything above:
+
+```bash
+# 1. Create a workspace at casky.ai and get a Runner Token
+# 2. Set it in .env (or your environment) — this is the variable that actually
+#    switches `casky harness` into platform mode, not CASKY_TOKEN:
+export CASKY_API_KEY=csk_...
+
+# 3. `casky harness` now runs in PLATFORM MODE — fetching and syncing
+#    investigation plans with your casky.ai workspace instead of generating
+#    them locally. Confirm which mode you're in from the banner it prints.
+```
+
+This is entirely additive — nothing in this repo depends on it, and you can start/stop syncing at
+any time without losing local functionality.
+
+---
+
+## Known limitations
+
+Being upfront about where this stands, not glossing over gaps:
+
+- `LocalPlaybookAdapter`'s intent-based matching only activates when a BYO-LLM provider is
+  configured; without one, matching falls back to technique-ID overlap only (still useful, just
+  less precise about genuine narrative intent vs. coincidental T-code overlap).
+- Prompt caching (for deployments using Anthropic) benefits some pipeline stages more than others —
+  it's on by default for the classifier pipeline here, but a genuinely one-off system prompt would
+  need to opt out explicitly via `cacheable_system=False`.
+- Local investigation memory (learning from your own past investigations over time, not just the
+  static starter playbooks) isn't built yet — the current pipeline doesn't carry context forward
+  between separate runs.
+- The classifier's internal `skill_category` grouping (`SUBDOMAIN_TO_CATEGORY` in `harness.py`) is
+  coarser than the 18 real skill-image categories — e.g. `active-directory` evidence gets labeled
+  under `identity` rather than its own category. This only affects plan-step labeling, not which
+  skill actually gets selected or run.
+- `casky verify`/`make verify` check tool presence in a running skill container, not full
+  correctness of every tool's output.
+
+---
+
+## Contributing
+
+- New playbooks: add a YAML file to `casky_pipeline/playbooks/` following the existing schema.
+- New adapters: implement `ContextEngineAdapter` in `casky_pipeline/adapters/` — see `base.py` for
+  the interface and `cve_mcp_adapter.py` for a minimal example.
+- Read `CLAUDE.md` first if you're using an AI coding agent to contribute — it documents this
+  repo's conventions, including the prompt-caching pattern all new LLM call sites should follow.
 
 ## CI
 
-- **build.yml** — builds the runner image, runs Trivy (HIGH/CRITICAL exit-code 1), pushes to GHCR on `main`. Trivy always scans the locally built image, not a stale GHCR tag.
-- **test.yml** — matrix over all 18 skills; pulls the corresponding `ghcr.io/casky-ai/skills/<name>:latest` image, starts it as `skill-lab`, runs `casky verify <skill>`. Skips gracefully if the skill image isn't published yet.
+- **build.yml** — builds the runner image, runs Trivy (HIGH/CRITICAL exit-code 1), pushes to GHCR on `main`.
+- **test.yml** — matrix over all skills; pulls the corresponding skill image, runs `casky verify`.
 
 ## License
 
-MIT
+Apache 2.0 — see `LICENSE`. Matches the license already used by the
+[skills-registry](https://github.com/mukul975/Anthropic-Cybersecurity-Skills) this repo depends on.

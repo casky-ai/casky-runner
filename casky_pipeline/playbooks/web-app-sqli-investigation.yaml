@@ -1,0 +1,45 @@
+id: web-app-sqli-investigation
+name: Web Application SQL Injection Investigation
+domain: web-app
+mitre_techniques:
+  - T1190
+  - T1505.003
+description: >
+  Investigates suspected exploitation of a public-facing web application via
+  SQL injection, from initial WAF/access-log signature detection through
+  parameter confirmation to a check for a dropped web shell used to maintain
+  access after successful exploitation.
+steps:
+  - skill_slug: waf-log-sqli-signature-triage
+    skill_category: web-application-security
+    technique_id: T1190
+    technique_name: Exploit Public-Facing Application
+    rationale: Evidence references anomalous request parameters or WAF alerts
+      consistent with SQL injection payloads against a public endpoint.
+    evidence_focus: WAF/access-log entries with SQL metacharacters or
+      UNION/SLEEP/error-based injection payloads in query parameters
+    step_order: 1
+  - skill_slug: sqlmap-assisted-parameter-confirmation
+    skill_category: web-application-security
+    technique_id: T1190
+    technique_name: Exploit Public-Facing Application
+    rationale: Confirming which parameter(s) are actually injectable (in a
+      controlled, authorized scope) distinguishes a real successful exploit
+      from a blocked/failed WAF-logged attempt.
+    evidence_focus: Injectable parameter names, database error responses,
+      time-based/boolean-based blind confirmation results
+    step_order: 2
+  - skill_slug: webshell-filesystem-sweep
+    skill_category: web-application-security
+    technique_id: T1505.003
+    technique_name: "Server Software Component: Web Shell"
+    rationale: Successful SQLi against a database-backed CMS/app often enables
+      writing a web shell via INTO OUTFILE or an application upload feature;
+      the app's writable directories should be swept for newly dropped files.
+    evidence_focus: Recently modified files under web-writable directories,
+      suspicious PHP/JSP/ASPX file signatures, unusual outbound connections
+      from the web server process
+    step_order: 3
+evidence_gaps:
+  - Database audit logging was not enabled prior to the incident, limiting query-level reconstruction
+  - Unclear whether the injected queries reached production data or a read replica

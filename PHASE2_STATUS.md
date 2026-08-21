@@ -118,7 +118,7 @@ ANTHROPIC_API_KEY=sk-ant-v3-YOUR_KEY_HERE
 
 # Optional (Platform integration)
 CASKY_API_KEY=csk_...
-CASKY_APP_URL=https://app.casky.ai
+CASKY_APP_URL=https://casky.ai
 
 # Optional (CVE enrichment)
 NVD_API_KEY=...

@@ -23,7 +23,12 @@ services:
     image: casky-runner:latest
     container_name: casky-runner
     restart: unless-stopped
-    user: root
+    # No `user: root` override — entrypoint.sh now detects the mounted
+    # docker.sock's actual GID at runtime and grants the non-root 'casky' user
+    # access to it, then drops to 'casky' before running anything else. This
+    # used to require forcing the whole container to run as root, which
+    # defeated the non-root design point-blank for the primary documented
+    # `docker compose up` path. See entrypoint.sh for the actual fix.
     depends_on:
       casky-skills:
         condition: service_completed_successfully
@@ -35,11 +40,17 @@ services:
       # Platform sync — set CASKY_API_KEY to enable platform mode in the harness.
       # Leave empty to run in local mode (findings stored in /var/casky/reports/).
       CASKY_API_KEY: ${CASKY_API_KEY:-}
-      CASKY_APP_URL: ${CASKY_APP_URL:-https://app.casky.ai}
+      CASKY_APP_URL: ${CASKY_APP_URL:-https://casky.ai}
       CASKY_LOCAL_PORT: ${CASKY_LOCAL_PORT:-8765}
       # Legacy single-run env vars — still work for: casky run <skill>
       CASKY_RUN_ID: ${CASKY_RUN_ID:-}
       CASKY_TOKEN: ${CASKY_TOKEN:-}
+      # BYO-LLM for the classifier pipeline (casky harness) — defaults to Anthropic
+      # direct via ANTHROPIC_API_KEY above. See .env.example for the full explanation.
+      CASKY_MODEL_PROVIDER: ${CASKY_MODEL_PROVIDER:-anthropic}
+      CASKY_MODEL_BASE_URL: ${CASKY_MODEL_BASE_URL:-}
+      CASKY_MODEL_NAME: ${CASKY_MODEL_NAME:-}
+      CASKY_MODEL_API_KEY: ${CASKY_MODEL_API_KEY:-}
       SKILL_LAB_NAME: ${SKILL_LAB_NAME:-skill-lab}
       SKILLS_LIBRARY_PATH: ${SKILLS_LIBRARY_PATH:-/opt/skills-library}
       # CVE MCP Server API keys — inherited by the cve_mcp.server subprocess.
@@ -59,6 +70,10 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - casky-reports:/var/casky/reports    # persist findings between runs
       - casky-skills-data:/opt/skills-library:ro   # skills library (read-only)
+      # Drop evidence files (CloudTrail exports, pcap-derived text, etc.) here on
+      # the host and they show up at the same path in the container — no 'docker
+      # cp' needed. Use with 'casky harness -i /var/casky/evidence/<file>'.
+      - ./evidence:/var/casky/evidence:ro
     networks:
       - casky-internal
     healthcheck:
@@ -138,7 +153,9 @@ services:
       target-db:
         condition: service_healthy
     networks:
-      - casky-lab
+      casky-lab:
+        aliases:
+          - target   # stable hostname skill-lab/README scripts use, regardless of which target profile is active
     dns: []
 
   # OWASP Juice Shop (self-contained, no database)
@@ -150,7 +167,9 @@ services:
     environment:
       NODE_ENV: production
     networks:
-      - casky-lab
+      casky-lab:
+        aliases:
+          - target
     dns: []
 
   # Custom target (user-provided image via TARGET_IMAGE env var)
@@ -160,7 +179,9 @@ services:
     container_name: casky-target
     restart: unless-stopped
     networks:
-      - casky-lab
+      casky-lab:
+        aliases:
+          - target
     dns: []
 
   # MySQL database for DVWA (only starts with lab-dvwa profile)

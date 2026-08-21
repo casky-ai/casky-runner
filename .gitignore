@@ -1,6 +1,7 @@
 .DS_Store
 *.log
 .env
+.env.local
 node_modules/
 dist/
 coverage/
@@ -11,4 +12,17 @@ coverage/
 *.ntvs*
 *.njsproj
 *.sln
-*.sw?   
+*.sw?
+
+# Python (casky_pipeline/)
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+*.egg-info/
+
+# Evidence files dropped for 'casky harness -i' (bind-mounted into the container —
+# see docker-compose.yml). These can contain real customer/investigation data and
+# must never be committed. evidence/README.md is the one file kept tracked.
+evidence/*
+!evidence/README.md

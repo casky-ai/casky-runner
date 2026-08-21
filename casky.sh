@@ -1,6 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# The image intentionally has no baked-in `USER` directive (see entrypoint.sh
+# for why — the docker.sock GID varies by platform and has to be fixed up at
+# runtime). That means `docker exec` into a running container — the primary
+# documented way to use `casky run` interactively — defaults to root, even
+# though the container's own main process already dropped to the non-root
+# 'casky' user via entrypoint.sh. Mirror that same drop here, so every path
+# into this script (docker run, docker exec, or entrypoint's own re-exec)
+# ends up running as 'casky' consistently, not just the container's PID 1.
+if [[ "$(id -u)" == "0" ]] && id casky &>/dev/null; then
+  exec su casky -c "$(printf '%q ' "$0" "$@")"
+fi
+
 COMMAND="${1:-help}"
 shift || true
 
@@ -14,20 +26,39 @@ case "$COMMAND" in
     # paste the SKILL.md content, then press Ctrl+D.
     CATEGORY="${1:-}"; shift || true
     AGENT="claude"
+    AGENT_CMD=""
     while [[ $# -gt 0 ]]; do
-      case "$1" in --agent) AGENT="$2"; shift 2 ;; *) shift ;; esac
+      case "$1" in
+        --agent) AGENT="$2"; shift 2 ;;
+        --agent-cmd) AGENT_CMD="$2"; shift 2 ;;
+        *) shift ;;
+      esac
     done
 
-    [[ -z "$CATEGORY" ]] && { echo "Usage: casky run <category> [--agent claude|gemini]"; exit 1; }
+    [[ -z "$CATEGORY" ]] && { echo "Usage: casky run <category> [--agent claude|gemini|copilot|custom] [--agent-cmd \"<binary>\"]"; exit 1; }
 
     CONTAINER="${SKILL_LAB_NAME:-skill-lab}"
 
     # Read the skill prompt from stdin (user pastes SKILL.md from the registry).
+    #
+    # Ctrl+D alone is ambiguous when reading pasted multi-line text on a real
+    # terminal: canonical-mode TTYs only treat it as true EOF when pressed on
+    # an EMPTY line. Pasted text that doesn't end with a trailing newline
+    # (the common case — copying from an editor/browser) means the first
+    # Ctrl+D just flushes the last partial line instead of ending input; a
+    # second Ctrl+D on the now-empty line is what actually finishes it. That
+    # looks exactly like "nothing happens" from the user's side. Fix: accept
+    # an explicit "END" sentinel line instead of relying solely on EOF
+    # signaling — same fix applied to `casky harness`'s evidence entry step.
     if [[ -t 0 ]]; then
-      echo "Paste your skill prompt below, then press Ctrl+D:" >&2
+      echo "Paste your skill prompt below. When done, type END alone on its own line and press Enter (or press Ctrl+D):" >&2
       echo "" >&2
     fi
-    SKILL_PROMPT="$(cat)"
+    SKILL_PROMPT=""
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      [[ "$line" == "END" ]] && break
+      SKILL_PROMPT+="${line}"$'\n'
+    done
 
     [[ -z "$SKILL_PROMPT" ]] && { echo "No prompt received on stdin. Aborting."; exit 1; }
 
@@ -73,6 +104,11 @@ Examples:
   docker exec ${CONTAINER} curl -s http://target
   docker exec ${CONTAINER} bash -c 'cat /results/output.txt'
 
+The skills library (every skill's full documentation, read-only) is mounted at
+/opt/skills-library inside ${CONTAINER} — NOT /skills. If you want to check another
+skill's documented commands or technique coverage, read it from there, e.g.:
+  docker exec ${CONTAINER} cat /opt/skills-library/skills/<skill-slug>/SKILL.md
+
 Do NOT enter either container interactively.${REPORT_SECTION}"
 
     case "$AGENT" in
@@ -85,7 +121,16 @@ Do NOT enter either container interactively.${REPORT_SECTION}"
           { echo "Set GOOGLE_API_KEY first"; exit 1; }
         echo "$PROMPT" | gemini
         ;;
-      *) echo "Unknown agent: $AGENT (use claude or gemini)"; exit 1 ;;
+      copilot)
+        [[ -z "${GITHUB_TOKEN:-}" ]] && { echo "Set GITHUB_TOKEN first (gh copilot auth)"; exit 1; }
+        echo "$PROMPT" | copilot   # confirm exact copilot CLI invocation flags before shipping —
+                                   # no copilot binary is installed in the image yet (see Section 6, item 8)
+        ;;
+      custom)
+        [[ -z "${AGENT_CMD:-}" ]] && { echo "Usage: casky run <category> --agent custom --agent-cmd \"<binary>\""; exit 1; }
+        echo "$PROMPT" | eval "$AGENT_CMD"
+        ;;
+      *) echo "Unknown agent: $AGENT (use claude, gemini, copilot, or custom --agent-cmd)"; exit 1 ;;
     esac
     ;;
 
@@ -133,10 +178,31 @@ Do NOT enter either container interactively.${REPORT_SECTION}"
           echo "Skills index not found. Run: docker compose up casky-skills"
           exit 1
         fi
+        # The raw index.json shipped in the skills-library image has no
+        # `subdomain` field at all (only name/description/domain/path) — every
+        # per-skill SKILL.md has it in its own frontmatter, but it's dropped
+        # when the flat index gets built. Prefer the enriched copy entrypoint.sh
+        # writes at container startup (scripts/enrich_skills_index.py); fall
+        # back to the raw index (subdomain filtering just won't match anything)
+        # if enrichment hasn't run for some reason.
+        ENRICHED_INDEX="/var/casky/skills-index-enriched.json"
+        INDEX_FILE="$SKILLS_PATH/index.json"
+        [[ -f "$ENRICHED_INDEX" ]] && INDEX_FILE="$ENRICHED_INDEX"
         if [[ -z "$SUBDOMAIN_FILTER" ]]; then
-          jq -r '.skills[] | "\(.name) (\(.subdomain)) — \(.description)"' "$SKILLS_PATH/index.json"
+          jq -r '.skills[] | "\(.name) (\(.subdomain // "uncategorized")) — \(.description)"' "$INDEX_FILE"
         else
-          jq -r ".skills[] | select(.subdomain == \"$SUBDOMAIN_FILTER\") | \"\(.name) (\(.subdomain)) — \(.description)\"" "$SKILLS_PATH/index.json"
+          MATCHES="$(jq -r ".skills[] | select(.subdomain == \"$SUBDOMAIN_FILTER\") | \"\(.name) (\(.subdomain)) — \(.description)\"" "$INDEX_FILE")"
+          if [[ -z "$MATCHES" ]]; then
+            echo "No skills found for subdomain '$SUBDOMAIN_FILTER'."
+            if [[ "$INDEX_FILE" == "$SKILLS_PATH/index.json" ]]; then
+              echo "Note: the enriched index ($ENRICHED_INDEX) isn't present, so subdomain filtering has nothing to match against — every filter returns empty. Restart the container to let entrypoint.sh regenerate it."
+            else
+              echo "Available subdomains:"
+              jq -r '[.skills[].subdomain] | unique | .[] | select(. != null) | "  " + .' "$INDEX_FILE"
+            fi
+            exit 1
+          fi
+          echo "$MATCHES"
         fi
         ;;
       show)
@@ -164,29 +230,38 @@ Do NOT enter either container interactively.${REPORT_SECTION}"
     ;;
 
   harness)
-    # casky harness
+    # casky harness [-i|--input-file <path>] [--auto]
     #
     # Launches the agentic harness — fetches an investigation plan from casky.ai
     # (platform mode) or from ~/.casky/plans/ (local mode), then runs all steps
     # as parallel Claude + CVE MCP + skill-tool agents.
     #
-    # Platform mode: set CASKY_API_KEY (generate at app.casky.ai/profile → Runner Token)
+    # Platform mode: set CASKY_API_KEY (generate at casky.ai/profile → Runner Token)
     # Local mode:    leave CASKY_API_KEY empty; findings saved to /var/casky/reports/
-    exec /opt/casky-console/bin/python3 /usr/local/bin/casky-harness
+    #
+    # "$@" forwarded so -i/--input-file (read evidence from a file instead of the
+    # interactive paste prompt) and --auto actually reach casky-harness's argparse —
+    # a prior version dropped every arg here silently.
+    exec /opt/casky-console/bin/python3 /usr/local/bin/casky-harness "$@"
     ;;
 
   help|*)
     echo "casky — Casky skill runner + agentic harness"
     echo ""
     echo "Commands:"
-    echo "  casky harness"
+    echo "  casky harness [-i|--input-file <path>] [--auto]"
     echo "      Launch the agentic harness. Fetches your investigation plan from"
     echo "      casky.ai and runs all steps in parallel as Claude + CVE MCP agents."
     echo "      Platform mode: set CASKY_API_KEY. Local mode: leave it empty."
+    echo "      -i/--input-file reads evidence from a file (e.g. a CloudTrail JSON"
+    echo "      export) instead of the interactive paste prompt — see the"
+    echo "      /var/casky/evidence bind mount in docker-compose.yml."
     echo ""
-    echo "  casky run <category> [--agent claude|gemini]"
+    echo "  casky run <category> [--agent claude|gemini|copilot|custom] [--agent-cmd \"<binary>\"]"
     echo "      Run a single skill. <category> is the skill image category"
     echo "      (web-app, forensics, network, …). Paste the SKILL.md prompt on stdin."
+    echo "      --agent custom requires --agent-cmd \"<binary>\", a command that reads the"
+    echo "      prompt from stdin (e.g. --agent custom --agent-cmd \"my-agent-cli\")."
     echo ""
     echo "  casky verify <category>"
     echo "      Check the skill container has all required tools for <category>."
@@ -208,10 +283,11 @@ Do NOT enter either container interactively.${REPORT_SECTION}"
     echo "Env vars:"
     echo "  ANTHROPIC_API_KEY      for Claude Code (required)"
     echo "  CASKY_API_KEY          Casky Runner Token — enables platform mode in harness"
-    echo "  CASKY_APP_URL          platform URL (default: https://app.casky.ai)"
+    echo "  CASKY_APP_URL          platform URL (default: https://casky.ai)"
     echo "  CASKY_LOCAL_PORT       local report server port (default: 8765)"
     echo "  SKILLS_LIBRARY_PATH    path to skills library (default: /opt/skills-library)"
     echo "  GOOGLE_API_KEY         for Gemini CLI (optional)"
+    echo "  GITHUB_TOKEN           for GitHub Copilot CLI, --agent copilot (optional)"
     echo "  SKILL_LAB_NAME         skill container name (default: skill-lab)"
     echo "  CASKY_RUN_ID           single-run platform link (optional, for casky run)"
     echo "  CASKY_TOKEN            single-run sandbox JWT (optional, for casky run)"

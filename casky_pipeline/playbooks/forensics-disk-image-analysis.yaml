@@ -1,0 +1,45 @@
+id: forensics-disk-image-analysis
+name: Disk Image Forensic Analysis
+domain: forensics
+mitre_techniques:
+  - T1070.004
+  - T1027
+description: >
+  Investigates a forensic disk image acquired from a compromised host,
+  covering acquisition integrity verification, recovery of deleted files
+  used to hide activity, and timeline reconstruction from filesystem
+  metadata to establish an authoritative sequence of events.
+steps:
+  - skill_slug: image-acquisition-integrity-verification
+    skill_category: digital-forensics
+    technique_id: T1070.004
+    technique_name: "Indicator Removal: File Deletion"
+    rationale: Before any analysis, the acquired image's hash must be
+      verified against the acquisition-time hash to establish chain of
+      custody and confirm no tampering occurred post-acquisition.
+    evidence_focus: Image hash (MD5/SHA256) match against acquisition record,
+      write-blocker usage confirmation, acquisition tool and timestamp
+    step_order: 1
+  - skill_slug: deleted-file-carving-pass
+    skill_category: digital-forensics
+    technique_id: T1070.004
+    technique_name: "Indicator Removal: File Deletion"
+    rationale: Actors commonly delete tooling and staged data after use;
+      carving unallocated space and recovering MFT entries for deleted files
+      surfaces evidence the actor intended to remove.
+    evidence_focus: Recovered deleted files in unallocated space, $MFT
+      entries for deleted files, recycle bin/INFO2 artifacts
+    step_order: 2
+  - skill_slug: mft-journal-timeline-reconstruction
+    skill_category: digital-forensics
+    technique_id: T1027
+    technique_name: Obfuscated Files or Information
+    rationale: Building a filesystem timeline from $MFT and $UsnJrnl entries
+      exposes timestomping and establishes an authoritative sequence of file
+      creation/modification/execution events across the incident window.
+    evidence_focus: $MFT/$UsnJrnl timeline entries, timestamp inconsistencies
+      (timestomping), prefetch and shimcache execution artifacts
+    step_order: 3
+evidence_gaps:
+  - Memory image was not captured at acquisition time, limiting in-memory artifact recovery
+  - Encryption on part of the volume prevented full carving of unallocated space

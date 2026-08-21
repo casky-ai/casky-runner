@@ -28,8 +28,8 @@ ENV_FILE="${REPO_ROOT}/.env.local"
 # ── colour helpers ─────────────────────────────────────────────────────────────
 GREEN='\033[0;32m'; RED='\033[0;31m'; CYAN='\033[0;36m'; BOLD='\033[1m'; RESET='\033[0m'
 section() { echo -e "\n${CYAN}${BOLD}--- $* ---${RESET}"; }
-pass()    { echo -e "  ${GREEN}PASS${RESET}: $*"; ((PASS++)); }
-fail()    { echo -e "  ${RED}FAIL${RESET}: $*"; ((FAIL++)); }
+pass()    { echo -e "  ${GREEN}PASS${RESET}: $*"; PASS=$((PASS + 1)); }
+fail()    { echo -e "  ${RED}FAIL${RESET}: $*"; FAIL=$((FAIL + 1)); }
 PASS=0; FAIL=0
 
 # ── pre-flight ────────────────────────────────────────────────────────────────

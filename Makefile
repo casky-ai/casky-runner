@@ -5,7 +5,7 @@ AGENT        ?= claude
 
 .DEFAULT_GOAL := help
 
-.PHONY: help build scan lint test test-compose test-compose-lab shell run verify push clean
+.PHONY: help build scan lint test pytest test-compose test-compose-lab shell run verify push clean
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?##' $(MAKEFILE_LIST) \
@@ -13,6 +13,14 @@ help: ## Show this help
 
 build: ## Build the runner image locally
 	docker build --progress=plain -t $(LOCAL_IMAGE) .
+
+pytest: ## Run the casky_pipeline unit test suite (adapters, pipeline, llm_providers)
+	@if [ ! -d .venv ]; then \
+	  echo "Creating .venv for casky_pipeline tests..."; \
+	  python3 -m venv .venv; \
+	  .venv/bin/pip install --quiet pytest pytest-asyncio anthropic requests pyyaml rich mcp; \
+	fi
+	.venv/bin/python -m pytest casky_pipeline/tests/ -v
 
 scan: build ## Run Trivy HIGH/CRITICAL scan (requires Docker)
 	docker run --rm \
@@ -26,7 +34,7 @@ lint: ## Shellcheck casky.sh (requires Docker)
 	  -v "$(CURDIR):/mnt:ro" \
 	  koalaman/shellcheck:stable /mnt/casky.sh
 
-test: build ## Run the full test harness (image-only, no compose)
+test: build pytest ## Run the full test harness — casky_pipeline unit tests + image-level tests
 	./tests/run-tests.sh $(LOCAL_IMAGE)
 
 test-compose: ## Test the full docker-compose stack using .env.local
@@ -40,7 +48,7 @@ shell: build ## Open a bash shell inside the runner
 	  -v /var/run/docker.sock:/var/run/docker.sock \
 	  $(LOCAL_IMAGE) bash
 
-run: build ## Run a skill  (SKILL=web-application-testing AGENT=claude)
+run: build ## Run a skill  (SKILL=web-app AGENT=claude)
 	docker run --rm \
 	  -e ANTHROPIC_API_KEY \
 	  -e GOOGLE_API_KEY \

@@ -1,0 +1,46 @@
+id: cloud-iam-privilege-escalation
+name: Cloud IAM Privilege Escalation Investigation
+domain: cloud
+mitre_techniques:
+  - T1078.004
+  - T1098
+  - T1550.001
+description: >
+  Investigates suspected privilege escalation via cloud IAM misconfiguration —
+  overly permissive roles, chained assume-role trust relationships, or stolen
+  short-lived credentials/tokens used to pivot into higher-privilege identities
+  across AWS/GCP/Azure.
+steps:
+  - skill_slug: prowler-iam-policy-audit
+    skill_category: cloud-security
+    technique_id: T1098
+    technique_name: Account Manipulation
+    rationale: Evidence references a principal gaining new permissions or attaching
+      policies outside its baseline — a Prowler IAM audit surfaces overly broad
+      or recently modified policy attachments across the account.
+    evidence_focus: IAM policy attachment diffs, inline policy grants, wildcard
+      resource/action statements on the implicated principal
+    step_order: 1
+  - skill_slug: scoutsuite-cross-account-role-graph
+    skill_category: cloud-security
+    technique_id: T1078.004
+    technique_name: "Valid Accounts: Cloud Accounts"
+    rationale: Chained assume-role trust policies are a common cloud privilege
+      escalation path; mapping the trust graph shows whether the implicated
+      identity could legitimately reach the privileged role it used.
+    evidence_focus: sts:AssumeRole trust policy chains, cross-account role
+      relationships, external ID usage on trust policies
+    step_order: 2
+  - skill_slug: cloudtrail-assume-role-anomaly-review
+    skill_category: cloud-security
+    technique_id: T1550.001
+    technique_name: "Use Alternate Authentication Material: Application Access Token"
+    rationale: A stolen or leaked short-lived token being reused from an unusual
+      source IP/user-agent is the strongest signal of alternate-material abuse;
+      CloudTrail sts:AssumeRole and GetSessionToken events expose this pattern.
+    evidence_focus: sts:AssumeRole/GetSessionToken event source IPs, session
+      duration outliers, user-agent strings inconsistent with prior activity
+    step_order: 3
+evidence_gaps:
+  - No CloudTrail data lake access to confirm the full assume-role chain beyond 90 days
+  - Source IP attribution for the initial credential compromise is unconfirmed
