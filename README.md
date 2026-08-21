@@ -147,20 +147,46 @@ docker exec -it casky-runner casky harness                                      
 **No lab target is touched in this path at all.** The classifier only reads the text you give it.
 
 **B. Live target practice — you have nothing yet and want to generate real findings from scratch.**
-`casky run <category>` runs actual security tools (nmap, nuclei, ffuf, ZAP, ...) against a real,
-deliberately-vulnerable web app running in an isolated lab network, no evidence required:
+`casky run <category>` runs actual security tools against a real, deliberately-vulnerable target
+running in an isolated lab network, no evidence required. The easiest way to start one — this picks
+the matching tool image *and* the target automatically:
 
 ```bash
-docker compose --profile lab-dvwa up -d          # or lab-juice-shop, or lab-custom (see below)
+make lab TARGET=dvwa                             # any TARGET from the table below
 docker exec skill-lab curl -s -I http://target/  # confirm the target is reachable
-docker exec -it casky-runner casky run web-app
+docker exec -it casky-runner casky run web-app   # category must match the tool image — see table
 ```
 
-| Profile | Target | Best for |
+Only one target runs at a time (they all resolve to the stable hostname `target`) — switching
+targets means tearing down the old one first: `docker compose --profile lab-<old> down` (or
+`docker rm -f casky-target skill-lab` if you hit a "name already in use" error).
+
+**The full target catalogue.** Every target below is a real, published image from
+[`casky-ai/skill-targets`](https://github.com/casky-ai/skill-targets) (`dvwa`/`juice-shop` use
+well-known third-party images instead — same effect). Each pairs with one of the 18 real tool
+images from [`casky-ai/skill-images`](https://github.com/casky-ai/skill-images); `make lab` sets
+`SKILL_IMAGE` for you, so `skill-lab` is always built with the right tools for the category you
+picked, not just whatever it happened to be built with last.
+
+| `TARGET=` | Skill category (`casky run <category>`) | Best for |
 |---|---|---|
-| `lab-dvwa` | DVWA (PHP + MySQL) | SQL injection, XSS, CSRF, auth bypass — the default in Quickstart above |
-| `lab-juice-shop` | OWASP Juice Shop (Node.js, no DB) | Same tool set, faster to start, no database to wait on |
-| `lab-custom` | Your own image (`export TARGET_IMAGE=...`) | Anything else — your image just needs to listen on port 80 |
+| `dvwa` | `web-app` | SQL injection, XSS, CSRF, auth bypass — the default in Quickstart above |
+| `juice-shop` | `web-app` | Same tool set, faster to start, no database to wait on |
+| `vulnstack` | `vuln-scan` | CVE scanning, version detection, misconfiguration |
+| `metasploitable` | `exploitation` | Service exploitation, vsftpd backdoor, Samba |
+| `vulnservices` | `exploitation` | vsftpd backdoor, Samba, Tomcat AJP Ghostcat |
+| `linux-pivot` | `post-exploit` | SUID, weak sudo, writable cron, shadow read |
+| `minidc` | `active-directory` (or `identity`) | Kerberoast, AS-REP roast, ACL abuse, LDAP enum |
+| `pcap-server` | `network` | FTP/Telnet cleartext, DNS tunnel detection |
+| `localstack` | `cloud` | S3 misconfig, IAM enumeration, hardcoded Lambda secrets |
+| `vulncode` | `appsec` | SAST, SQLi, path traversal, secrets in git history |
+| `evidence-pack` | `forensics` (or `incident-response`) | Disk triage, MFT timeline, lateral movement logs |
+| `sample-pack` | `malware` | YARA, static analysis, deobfuscation, IOC extraction — **private on GHCR**, `docker login ghcr.io` with org access first |
+| `custom` | whatever you set `SKILL_IMAGE=` to | Your own image (`export TARGET_IMAGE=...`) |
+
+Without `make lab`, the equivalent is `SKILL_IMAGE=ghcr.io/casky-ai/skills/<category>:latest
+docker compose --profile lab-<target> up -d --build` — `make lab` just remembers the pairing so you
+don't have to.
 
 **Combining them yourself.** Nothing does this for you, but it's a legitimate manual pattern: attack a
 lab target live, capture the resulting traffic (`tcpdump` on the `casky-lab` network while you run
@@ -321,6 +347,14 @@ Being upfront about where this stands, not glossing over gaps:
   skill actually gets selected or run.
 - `casky verify`/`make verify` check tool presence in a running skill container, not full
   correctness of every tool's output.
+- `skill-lab` only builds against one `SKILL_IMAGE` at a time — running multiple categories
+  simultaneously (e.g. `web-app` and `network` tools both available at once) isn't supported;
+  switch categories by rebuilding (`make lab TARGET=<name>` again).
+- `skill-targets`' own README documents `targets/evidence-pack` as GHCR-private, but it currently
+  pulls successfully with no authentication configured — likely a visibility setting that drifted
+  from what's documented, not an intentional access change. Flagged upstream; don't rely on this
+  either way (it may become genuinely gated, or the docs may just need correcting) — `sample-pack`
+  is confirmed genuinely private and needs `docker login ghcr.io` with org access regardless.
 
 ---
 

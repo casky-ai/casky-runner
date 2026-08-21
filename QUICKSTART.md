@@ -83,37 +83,47 @@ refresh to the latest skill set.
 
 ## 3. Choose and start a target
 
-Pick one profile:
-
-### Option A: DVWA — full multi-vulnerability web app
-
-```bash
-docker compose --profile lab-dvwa up -d
-```
-
-**Starts:** `casky-runner`, `db` (local Postgres), `skill-lab` (web-app tools: nmap, nuclei, ffuf, etc.),
-`target-dvwa` (container name `casky-target`), `target-db` (MySQL, auto-initialized).
-
-**Best for:** SQL injection, XSS, CSRF, auth bypass.
-
-### Option B: OWASP Juice Shop — self-contained, no database
+The easiest way — this also builds `skill-lab` with the *matching* tool image, not whatever it was
+built with last:
 
 ```bash
-docker compose --profile lab-juice-shop up -d
+make lab TARGET=dvwa
 ```
 
-Same services as Option A, but the target is Juice Shop (Node.js) — no database to wait on, faster
-to start.
+`TARGET` is any of: `dvwa`, `juice-shop`, `vulnstack`, `metasploitable`, `vulnservices`,
+`linux-pivot`, `minidc`, `pcap-server`, `localstack`, `vulncode`, `evidence-pack`, `sample-pack`,
+`custom`. Each pairs with a specific skill category (`casky run <category>` must match — `make lab`
+prints which `SKILL_IMAGE` it used so you know) — see the full table in
+[README.md](README.md#two-ways-to-investigate--and-where-the-lab-targets-fit-in).
 
-### Option C: Custom target — bring your own container
+**Starts:** `casky-runner`, `db` (local Postgres), `skill-lab` (built from the matching
+`ghcr.io/casky-ai/skills/<category>:latest`), the target container (`casky-target`) — plus
+`target-db` (MySQL) if you picked `dvwa`, the only target with a database dependency.
+
+**Only one target runs at a time** — they all share the stable hostname `target`. Switching means
+tearing down the old one first:
+```bash
+docker compose --profile lab-<old-target> down
+# or, if you hit "name already in use":
+docker rm -f casky-target skill-lab
+```
+
+**`sample-pack` is private on GHCR** (real malware samples, deliberately gated) — `docker login
+ghcr.io` with org access before pulling it. Every other target is public.
+
+**Custom target — bring your own container:**
 
 ```bash
 export TARGET_IMAGE=your-custom:latest
-docker compose --profile lab-custom up -d
+make lab TARGET=custom   # defaults SKILL_IMAGE to web-app; override it yourself if you need
+                          # different tools, e.g. SKILL_IMAGE=ghcr.io/casky-ai/skills/cloud:latest
 ```
 
 Your image needs to listen on port 80 and join the `casky-lab` network — `docker-compose.yml` wires
 this up automatically once `TARGET_IMAGE` is set.
+
+Without `make lab`, the equivalent is `SKILL_IMAGE=ghcr.io/casky-ai/skills/<category>:latest
+docker compose --profile lab-<target> up -d --build`.
 
 ## 4. Verify everything is actually up
 
@@ -257,8 +267,8 @@ affect which skill gets selected, only how the resulting step is labeled.
 | `CASKY_RUN_ID` / `CASKY_TOKEN` | — | Link a *single* skill run's findings to a platform run — separate from `CASKY_API_KEY` above |
 | `CASKY_APP_URL` | `https://casky.ai` | Platform URL override |
 | `SKILL_LAB_NAME` | `skill-lab` | Skill container name |
-| `SKILL_IMAGE` | `ghcr.io/casky-ai/skills/web-app:latest` | Skill container image |
-| `TARGET_IMAGE` | `ghcr.io/casky-ai/targets/dvwa:latest` | Target container image (lab-custom profile) |
+| `SKILL_IMAGE` | `ghcr.io/casky-ai/skills/web-app:latest` | Which of the 18 real skill tool images `skill-lab` is built from — `make lab TARGET=<name>` sets this to match automatically; see the target/category table above |
+| `TARGET_IMAGE` | `alpine:latest` | Target container image, `lab-custom` profile only |
 
 See `.env.example` for the complete annotated list, including BYO-LLM (`CASKY_MODEL_*`) and CVE
 enrichment API keys (all optional — NVD + EPSS + CISA KEV work with none of them set).
@@ -270,23 +280,26 @@ enrichment API keys (all optional — NVD + EPSS + CISA KEV work with none of th
 ### Scenario 1: Interactive web app investigation (DVWA)
 
 ```bash
-docker compose --profile lab-dvwa up -d
+make lab TARGET=dvwa
 docker exec skill-lab curl -s -I http://target/ | head -3   # confirm target is up
 docker exec -it casky-runner casky run web-app
 ```
 
-### Scenario 2: Quick tool verification across categories
+### Scenario 2: Tool verification across categories
+
+`skill-lab` only has one category's tools at a time — verifying a different category means
+rebuilding for it first (each `make lab` call replaces the previous build):
 
 ```bash
-docker exec casky-runner casky verify web-app
-docker exec casky-runner casky verify cloud
-docker exec casky-runner casky verify network
+make lab TARGET=dvwa && docker exec casky-runner casky verify web-app
+make lab TARGET=localstack && docker exec casky-runner casky verify cloud
+make lab TARGET=pcap-server && docker exec casky-runner casky verify network
 ```
 
 ### Scenario 3: Platform integration (optional)
 
 1. Set `CASKY_API_KEY` in `.env` (generate at casky.ai)
-2. `docker compose --profile lab-dvwa up -d`
+2. `make lab TARGET=dvwa`
 3. `docker exec -it casky-runner casky harness` — this now runs in **PLATFORM MODE**, fetching your
    existing investigation plans from casky.ai instead of generating a new one locally
 4. Findings sync back to your platform dashboard automatically
@@ -295,7 +308,7 @@ docker exec casky-runner casky verify network
 
 ```bash
 # Leave CASKY_API_KEY unset (or empty) — this is the default, no action needed
-docker compose --profile lab-dvwa up -d
+make lab TARGET=dvwa
 docker exec -it casky-runner casky harness   # local mode: generate a plan from pasted evidence
 ```
 
@@ -303,19 +316,31 @@ docker exec -it casky-runner casky harness   # local mode: generate a plan from 
 
 ```bash
 export TARGET_IMAGE=myapp:latest
-docker compose --profile lab-custom up -d
+make lab TARGET=custom   # override SKILL_IMAGE=... too if your image needs non-web-app tools
 docker exec skill-lab curl -s -I http://target/ | head -3
 docker exec -it casky-runner casky run web-app
+```
+
+### Scenario 6: A different lab target/category (e.g. network recon against pcap-server)
+
+```bash
+make lab TARGET=pcap-server
+docker exec skill-lab which tshark tcpdump masscan   # confirm the right tools landed
+docker exec -it casky-runner casky run network
 ```
 
 ---
 
 ## Troubleshooting
 
-**Skill image tools missing after `casky verify`**
+**Skill image tools missing / wrong category after `casky verify`**
+
+`skill-lab` is built locally (not pulled) from whichever `SKILL_IMAGE` it was last built with —
+rebuild it for the category you actually want:
 ```bash
-docker compose pull skill-lab
-docker compose --profile lab-dvwa up -d --force-recreate skill-lab
+make lab TARGET=<matching-target>   # e.g. TARGET=pcap-server for network tools
+# or manually:
+SKILL_IMAGE=ghcr.io/casky-ai/skills/<category>:latest docker compose --profile lab-<target> up -d --build
 ```
 
 **`docker exec` permission denied**

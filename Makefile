@@ -5,7 +5,7 @@ AGENT        ?= claude
 
 .DEFAULT_GOAL := help
 
-.PHONY: help build scan lint test pytest test-compose test-compose-lab shell run verify push clean
+.PHONY: help build scan lint test pytest test-compose test-compose-lab shell run verify push clean lab
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?##' $(MAKEFILE_LIST) \
@@ -75,6 +75,30 @@ verify: ## Verify skill-lab has required tools  (SKILL=web-app)
 	  echo "FAIL: $$FAIL tool(s) missing from skill-lab"; exit 1; \
 	fi; \
 	echo "PASS: all $$PASS tools present in skill-lab ($(SKILL))"
+
+lab: ## Start a lab target + matching skill-lab tools (TARGET=vulnstack|metasploitable|vulnservices|linux-pivot|minidc|pcap-server|localstack|vulncode|evidence-pack|sample-pack|dvwa|juice-shop|custom)
+	@case "$(TARGET)" in \
+	  dvwa)           SKILL_IMAGE=ghcr.io/casky-ai/skills/web-app:latest ;; \
+	  juice-shop)     SKILL_IMAGE=ghcr.io/casky-ai/skills/web-app:latest ;; \
+	  vulnstack)      SKILL_IMAGE=ghcr.io/casky-ai/skills/vuln-scan:latest ;; \
+	  metasploitable) SKILL_IMAGE=ghcr.io/casky-ai/skills/exploitation:latest ;; \
+	  vulnservices)   SKILL_IMAGE=ghcr.io/casky-ai/skills/exploitation:latest ;; \
+	  linux-pivot)    SKILL_IMAGE=ghcr.io/casky-ai/skills/post-exploit:latest ;; \
+	  minidc)         SKILL_IMAGE=ghcr.io/casky-ai/skills/active-directory:latest ;; \
+	  pcap-server)    SKILL_IMAGE=ghcr.io/casky-ai/skills/network:latest ;; \
+	  localstack)     SKILL_IMAGE=ghcr.io/casky-ai/skills/cloud:latest ;; \
+	  vulncode)       SKILL_IMAGE=ghcr.io/casky-ai/skills/appsec:latest ;; \
+	  evidence-pack)  SKILL_IMAGE=ghcr.io/casky-ai/skills/forensics:latest; \
+	                  echo "NOTE: targets/evidence-pack — see README's known-limitations note on its GHCR visibility." ;; \
+	  sample-pack)    SKILL_IMAGE=ghcr.io/casky-ai/skills/malware:latest; \
+	                  echo "NOTE: targets/sample-pack is PRIVATE on GHCR — run 'docker login ghcr.io' with org access first." ;; \
+	  custom)         SKILL_IMAGE=ghcr.io/casky-ai/skills/web-app:latest; \
+	                  echo "NOTE: override SKILL_IMAGE=... yourself if your custom target needs different tools." ;; \
+	  "")             echo "Usage: make lab TARGET=<dvwa|juice-shop|vulnstack|metasploitable|vulnservices|linux-pivot|minidc|pcap-server|localstack|vulncode|evidence-pack|sample-pack|custom>"; exit 1 ;; \
+	  *)              echo "Unknown TARGET '$(TARGET)' — see 'make help'"; exit 1 ;; \
+	esac; \
+	echo "Starting lab-$(TARGET) — skill-lab built from $$SKILL_IMAGE"; \
+	SKILL_IMAGE=$$SKILL_IMAGE docker compose --profile lab-$(TARGET) up -d --build
 
 push: build ## Tag and push to GHCR
 	docker tag $(LOCAL_IMAGE) $(REMOTE_IMAGE)

@@ -106,11 +106,36 @@ services:
 
   # Skill container: security tools pre-installed (nmap, nuclei, ZAP, ScoutSuite, etc.)
   # Override with custom image or build from Dockerfile
+  #
+  # SKILL_IMAGE picks which of the 18 real, published skill-images (see
+  # docker/skill-lab/Dockerfile) this builds from — defaults to web-app. Set it
+  # in .env (or on the command line) to match whichever lab-<target> profile
+  # you're starting, then rebuild: e.g.
+  #   SKILL_IMAGE=ghcr.io/casky-ai/skills/network:latest \
+  #     docker compose --profile lab-pcap-server up -d --build
+  # See README.md's target/category pairing table, or just use
+  # `make lab TARGET=<name>`, which sets this automatically.
   skill-lab:
-    profiles: [lab, lab-dvwa, lab-juice-shop, lab-custom]
+    profiles:
+      - lab
+      - lab-dvwa
+      - lab-juice-shop
+      - lab-custom
+      - lab-vulnstack
+      - lab-metasploitable
+      - lab-vulnservices
+      - lab-linux-pivot
+      - lab-minidc
+      - lab-pcap-server
+      - lab-localstack
+      - lab-vulncode
+      - lab-evidence-pack
+      - lab-sample-pack
     build:
       context: .
       dockerfile: docker/skill-lab/Dockerfile
+      args:
+        SKILL_IMAGE: ${SKILL_IMAGE:-ghcr.io/casky-ai/skills/web-app:latest}
     image: casky-skill-lab:latest
     container_name: skill-lab
     restart: unless-stopped
@@ -176,6 +201,124 @@ services:
   target-custom:
     profiles: [lab-custom]
     image: ${TARGET_IMAGE:-alpine:latest}
+    container_name: casky-target
+    restart: unless-stopped
+    networks:
+      casky-lab:
+        aliases:
+          - target
+    dns: []
+
+  # ── The remaining published skill-targets (ghcr.io/casky-ai/targets/<name>) ─
+  # All public, single-container, no extra services needed (unlike DVWA's MySQL
+  # dependency) — confirmed live against github.com/casky-ai/skill-targets'
+  # own documented pattern. Pair each with its matching SKILL_IMAGE — see the
+  # table in README.md, or use `make lab TARGET=<name>`.
+
+  target-vulnstack:            # SKILL_IMAGE=.../skills/vuln-scan
+    profiles: [lab-vulnstack]
+    image: ghcr.io/casky-ai/targets/vulnstack:latest
+    container_name: casky-target
+    restart: unless-stopped
+    networks:
+      casky-lab:
+        aliases:
+          - target
+    dns: []
+
+  target-metasploitable:       # SKILL_IMAGE=.../skills/exploitation
+    profiles: [lab-metasploitable]
+    image: ghcr.io/casky-ai/targets/metasploitable:latest
+    container_name: casky-target
+    restart: unless-stopped
+    networks:
+      casky-lab:
+        aliases:
+          - target
+    dns: []
+
+  target-vulnservices:         # SKILL_IMAGE=.../skills/exploitation
+    profiles: [lab-vulnservices]
+    image: ghcr.io/casky-ai/targets/vulnservices:latest
+    container_name: casky-target
+    restart: unless-stopped
+    networks:
+      casky-lab:
+        aliases:
+          - target
+    dns: []
+
+  target-linux-pivot:          # SKILL_IMAGE=.../skills/post-exploit
+    profiles: [lab-linux-pivot]
+    image: ghcr.io/casky-ai/targets/linux-pivot:latest
+    container_name: casky-target
+    restart: unless-stopped
+    networks:
+      casky-lab:
+        aliases:
+          - target
+    dns: []
+
+  target-minidc:                # SKILL_IMAGE=.../skills/active-directory
+    profiles: [lab-minidc]
+    image: ghcr.io/casky-ai/targets/minidc:latest
+    container_name: casky-target
+    restart: unless-stopped
+    networks:
+      casky-lab:
+        aliases:
+          - target
+    dns: []
+
+  target-pcap-server:           # SKILL_IMAGE=.../skills/network
+    profiles: [lab-pcap-server]
+    image: ghcr.io/casky-ai/targets/pcap-server:latest
+    container_name: casky-target
+    restart: unless-stopped
+    networks:
+      casky-lab:
+        aliases:
+          - target
+    dns: []
+
+  target-localstack:            # SKILL_IMAGE=.../skills/cloud
+    profiles: [lab-localstack]
+    image: ghcr.io/casky-ai/targets/localstack:latest
+    container_name: casky-target
+    restart: unless-stopped
+    networks:
+      casky-lab:
+        aliases:
+          - target
+    dns: []
+
+  target-vulncode:               # SKILL_IMAGE=.../skills/appsec
+    profiles: [lab-vulncode]
+    image: ghcr.io/casky-ai/targets/vulncode:latest
+    container_name: casky-target
+    restart: unless-stopped
+    networks:
+      casky-lab:
+        aliases:
+          - target
+    dns: []
+
+  # PRIVATE on GHCR (forensics/malware content — deliberately gated, not a bug).
+  # docker login ghcr.io with org access before pulling either of these two.
+  target-evidence-pack:          # SKILL_IMAGE=.../skills/forensics
+    profiles: [lab-evidence-pack]
+    image: ghcr.io/casky-ai/targets/evidence-pack:latest
+    container_name: casky-target
+    restart: unless-stopped
+    networks:
+      casky-lab:
+        aliases:
+          - target
+    dns: []
+
+  target-sample-pack:            # SKILL_IMAGE=.../skills/malware
+    profiles: [lab-sample-pack]
+    image: ghcr.io/casky-ai/targets/sample-pack:latest
     container_name: casky-target
     restart: unless-stopped
     networks:
