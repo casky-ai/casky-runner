@@ -575,6 +575,267 @@ async def test_skill_selector_leaves_both_blank_when_unresolvable(capsys):
     assert "couldn't be backfilled" in capsys.readouterr().err
 
 
+# ── MITRE-technique pre-filter for SkillSelector ─────────────────────────────
+#
+# SkillSelector used to send every skill in the index — name/subdomain/description,
+# uncapped, uncached — into the LLM prompt on every investigation (~817 skills in the
+# real registry, an estimated 16k-27k tokens). LocalPlaybookAdapter already solves
+# this for its own 12 playbooks (a technique-ID-overlap candidate pool computed
+# before any LLM call); these tests cover porting that same pattern to the much
+# larger skill index via _narrow_skill_index_by_technique_overlap.
+
+def _make_skill_entry(name: str, mitre_attack=None, subdomain: str = "identity-security", description: str = "A test skill.") -> dict:
+    entry = {"name": name, "subdomain": subdomain, "description": description}
+    if mitre_attack is not None:
+        entry["mitre_attack"] = mitre_attack
+    return entry
+
+
+class TestNarrowSkillIndexByTechniqueOverlap:
+    def test_empty_validated_techniques_falls_back_to_full_index(self):
+        from casky_pipeline.pipeline import _narrow_skill_index_by_technique_overlap
+
+        index = [_make_skill_entry("a", ["T1003"])]
+        pool, reason = _narrow_skill_index_by_technique_overlap(index, set())
+
+        assert pool is index
+        assert reason is not None and "0 validated" in reason
+
+    def test_overlap_below_threshold_falls_back_and_reports_count(self):
+        from casky_pipeline.pipeline import _narrow_skill_index_by_technique_overlap
+
+        index = [_make_skill_entry(f"match-{i}", ["T1003"]) for i in range(5)]
+        pool, reason = _narrow_skill_index_by_technique_overlap(index, {"T1003"}, min_candidates=15)
+
+        assert pool is index
+        assert reason is not None
+        assert "5" in reason and "15" in reason
+
+    def test_overlap_at_or_above_threshold_returns_narrowed_pool(self):
+        from casky_pipeline.pipeline import _narrow_skill_index_by_technique_overlap
+
+        matching = [_make_skill_entry(f"match-{i}", ["T1003"]) for i in range(20)]
+        non_matching = [_make_skill_entry(f"other-{i}", ["T9999"]) for i in range(20)]
+        pool, reason = _narrow_skill_index_by_technique_overlap(
+            matching + non_matching, {"T1003"}, min_candidates=15
+        )
+
+        assert reason is None
+        assert {e["name"] for e in pool} == {e["name"] for e in matching}
+
+    def test_missing_mitre_attack_field_treated_as_no_overlap_not_a_crash(self):
+        from casky_pipeline.pipeline import _narrow_skill_index_by_technique_overlap
+
+        matching = [_make_skill_entry(f"match-{i}", ["T1003"]) for i in range(20)]
+        no_field = [_make_skill_entry(f"unknown-{i}") for i in range(5)]  # no mitre_attack key at all
+        pool, reason = _narrow_skill_index_by_technique_overlap(
+            matching + no_field, {"T1003"}, min_candidates=15
+        )
+
+        assert reason is None
+        assert all(e["name"].startswith("match-") for e in pool)
+
+    def test_malformed_mitre_attack_treated_as_no_overlap_not_a_crash(self):
+        from casky_pipeline.pipeline import _narrow_skill_index_by_technique_overlap
+
+        matching = [_make_skill_entry(f"match-{i}", ["T1003"]) for i in range(20)]
+        malformed = [
+            _make_skill_entry("string-field", "T1003"),   # str, not list
+            _make_skill_entry("none-field", None),
+        ]
+        malformed[1].pop("mitre_attack", None)  # ensure genuinely absent, not literal None key
+        pool, reason = _narrow_skill_index_by_technique_overlap(
+            matching + malformed, {"T1003"}, min_candidates=15
+        )
+
+        assert reason is None
+        assert all(e["name"].startswith("match-") for e in pool)
+
+    def test_does_not_mutate_input_list_or_entries(self):
+        from casky_pipeline.pipeline import _narrow_skill_index_by_technique_overlap
+
+        index = [_make_skill_entry(f"match-{i}", ["T1003"]) for i in range(20)]
+        original = [dict(e) for e in index]
+
+        _narrow_skill_index_by_technique_overlap(index, {"T1003"}, min_candidates=15)
+
+        assert index == original
+
+    def test_union_semantics_across_multiple_validated_techniques(self):
+        from casky_pipeline.pipeline import _narrow_skill_index_by_technique_overlap
+
+        only_a = [_make_skill_entry(f"a-{i}", ["T1003"]) for i in range(10)]
+        only_b = [_make_skill_entry(f"b-{i}", ["T1078.004"]) for i in range(10)]
+        pool, reason = _narrow_skill_index_by_technique_overlap(
+            only_a + only_b, {"T1003", "T1078.004"}, min_candidates=15
+        )
+
+        assert reason is None
+        assert {e["name"] for e in pool} == {e["name"] for e in only_a + only_b}
+
+
+class TestFormatSkillIndexLine:
+    def test_includes_mitre_tag_when_present(self):
+        from casky_pipeline.pipeline import _format_skill_index_line
+
+        line = _format_skill_index_line(_make_skill_entry("mimikatz-detection", ["T1003", "T1078.004"]))
+        assert "[MITRE: T1003, T1078.004]" in line
+
+    def test_omits_mitre_tag_when_absent_matches_original_format(self):
+        from casky_pipeline.pipeline import _format_skill_index_line
+
+        entry = {"name": "mimikatz-detection", "subdomain": "identity-security", "description": "Detect mimikatz usage"}
+        line = _format_skill_index_line(entry)
+
+        assert line == "mimikatz-detection (identity-security) — Detect mimikatz usage"
+        assert "MITRE" not in line
+
+
+# ── Integration: the narrowing actually reaches SkillSelector's real prompt ──
+
+@pytest.mark.asyncio
+async def test_skill_selector_prompt_excludes_non_overlapping_skills_when_pool_large_enough():
+    from casky_pipeline.pipeline import TechniqueValidatorOutput, ValidatedTechnique
+
+    matching = [_make_skill_entry(f"match-{i}", ["T1003"]) for i in range(20)]
+    non_matching = [_make_skill_entry(f"unrelated-{i}", ["T9999"]) for i in range(20)]
+    input_ = ClassifierInput(
+        evidence_text="lsass.exe memory dump observed",
+        entities=PipelineEntities(),
+        skill_index=matching + non_matching,
+    )
+    validated = TechniqueValidatorOutput(
+        techniques=[ValidatedTechnique(technique_id="T1003", technique_name="OS Credential Dumping", confidence=0.9)],
+    )
+    responses = _happy_responses()
+    responses["selector"] = json.dumps({"selected": [], "evidence_gaps": []})
+    provider = FakeLLMProvider(responses)
+
+    await SkillSelector().run(input_, validated, provider)
+
+    prompt = next(c["user_prompt"] for c in provider.calls if c["stage"] == "selector")
+    assert "match-0" in prompt
+    assert "unrelated-0" not in prompt
+
+
+@pytest.mark.asyncio
+async def test_skill_selector_full_index_and_logs_fallback_when_no_validated_techniques(capsys):
+    from casky_pipeline.pipeline import TechniqueValidatorOutput
+
+    index = [_make_skill_entry(f"skill-{i}", ["T1003"]) for i in range(20)]
+    input_ = ClassifierInput(evidence_text="e", entities=PipelineEntities(), skill_index=index)
+    responses = _happy_responses()
+    responses["selector"] = json.dumps({"selected": [], "evidence_gaps": []})
+    provider = FakeLLMProvider(responses)
+
+    await SkillSelector().run(input_, TechniqueValidatorOutput(), provider)
+
+    prompt = next(c["user_prompt"] for c in provider.calls if c["stage"] == "selector")
+    assert all(f"skill-{i}" in prompt for i in range(20))
+    assert "0 validated" in capsys.readouterr().err
+
+
+@pytest.mark.asyncio
+async def test_skill_selector_full_index_and_logs_fallback_when_overlap_below_threshold(capsys):
+    from casky_pipeline.pipeline import TechniqueValidatorOutput, ValidatedTechnique
+
+    matching = [_make_skill_entry(f"match-{i}", ["T1003"]) for i in range(3)]  # below the 15 default
+    non_matching = [_make_skill_entry(f"other-{i}", ["T9999"]) for i in range(20)]
+    input_ = ClassifierInput(evidence_text="e", entities=PipelineEntities(), skill_index=matching + non_matching)
+    validated = TechniqueValidatorOutput(
+        techniques=[ValidatedTechnique(technique_id="T1003", technique_name="OS Credential Dumping", confidence=0.9)],
+    )
+    responses = _happy_responses()
+    responses["selector"] = json.dumps({"selected": [], "evidence_gaps": []})
+    provider = FakeLLMProvider(responses)
+
+    await SkillSelector().run(input_, validated, provider)
+
+    prompt = next(c["user_prompt"] for c in provider.calls if c["stage"] == "selector")
+    assert "other-0" in prompt  # fell back to full index
+    stderr = capsys.readouterr().err
+    assert "3" in stderr
+
+
+@pytest.mark.asyncio
+async def test_hallucination_guard_validates_against_full_index_not_narrowed_pool():
+    """A real slug that exists in skill_index but fell outside the narrowed pool
+    (because its mitre_attack didn't overlap this investigation's validated
+    techniques) must still be ACCEPTED if the model selects it — it's a false
+    negative of the pre-filter, not a hallucination. Rejecting it would be strictly
+    worse than the pre-change baseline."""
+    from casky_pipeline.pipeline import TechniqueValidatorOutput, ValidatedTechnique
+
+    matching = [_make_skill_entry(f"match-{i}", ["T1003"]) for i in range(20)]
+    outside_pool = _make_skill_entry("real-but-outside-pool", ["T9999"])  # real slug, no T1003 overlap
+    input_ = ClassifierInput(
+        evidence_text="e", entities=PipelineEntities(), skill_index=matching + [outside_pool]
+    )
+    validated = TechniqueValidatorOutput(
+        techniques=[ValidatedTechnique(technique_id="T1003", technique_name="OS Credential Dumping", confidence=0.9)],
+    )
+    responses = _happy_responses()
+    responses["selector"] = json.dumps({
+        "selected": [{
+            "skill_slug": "real-but-outside-pool",
+            "skill_category": "identity-security",
+            "technique_id": "T1003",
+            "technique_name": "OS Credential Dumping",
+            "rationale": "r", "evidence_focus": "e", "confidence": 0.5, "evidence_anchors": [],
+        }],
+        "evidence_gaps": [],
+    })
+    provider = FakeLLMProvider(responses)
+
+    output = await SkillSelector().run(input_, validated, provider)
+
+    assert [s.skill_slug for s in output.selected] == ["real-but-outside-pool"]
+
+
+@pytest.mark.asyncio
+async def test_existing_two_entry_fixture_still_sends_full_index_via_fallback():
+    """Explicit regression guard: _make_input()'s 2-entry index (no mitre_attack
+    field at all) must always trigger the size-floor fallback and keep sending the
+    full index, matching pre-change behavior byte-for-byte in intent."""
+    from casky_pipeline.pipeline import TechniqueValidatorOutput
+
+    provider = FakeLLMProvider(_happy_responses())
+
+    await SkillSelector().run(_make_input(), TechniqueValidatorOutput(), provider)
+
+    prompt = next(c["user_prompt"] for c in provider.calls if c["stage"] == "selector")
+    assert "mimikatz-detection" in prompt
+    assert "sam-hive-analysis" in prompt
+
+
+@pytest.mark.asyncio
+async def test_prefilter_reduces_prompt_length_substantially_on_realistic_sized_index():
+    """Concrete, executable proof of the token-reduction claim — not just an
+    estimate. Guards against a future accidental revert to input.skill_index in
+    _build_user_prompt."""
+    from casky_pipeline.pipeline import TechniqueValidatorOutput, ValidatedTechnique, _format_skill_index_line
+
+    matching = [_make_skill_entry(f"match-{i}", ["T1003"], description="A" * 100) for i in range(40)]
+    non_matching = [_make_skill_entry(f"other-{i}", ["T9999"], description="B" * 100) for i in range(760)]
+    full_index = matching + non_matching
+    validated = TechniqueValidatorOutput(
+        techniques=[ValidatedTechnique(technique_id="T1003", technique_name="OS Credential Dumping", confidence=0.9)],
+    )
+
+    before_len = len("\n".join(_format_skill_index_line(e) for e in full_index))
+
+    input_ = ClassifierInput(evidence_text="e", entities=PipelineEntities(), skill_index=full_index)
+    responses = _happy_responses()
+    responses["selector"] = json.dumps({"selected": [], "evidence_gaps": []})
+    provider = FakeLLMProvider(responses)
+    await SkillSelector().run(input_, validated, provider)
+    after_prompt = next(c["user_prompt"] for c in provider.calls if c["stage"] == "selector")
+    # after_prompt also contains the VALIDATED TECHNIQUES section; isolate the skill lines
+    after_len = len(after_prompt.split("AVAILABLE SKILLS")[1])
+
+    assert after_len < before_len * 0.2
+
+
 # ── Stage classes are independently exercisable (not just via run_pipeline) ─
 
 @pytest.mark.asyncio

@@ -286,6 +286,74 @@ class SkillSelectorOutput:
     evidence_gaps: list[str] = field(default_factory=list)
 
 
+# Skills currently number in the hundreds (~817 in the real upstream registry), and
+# SkillSelector used to send every single one — name/subdomain/description, uncapped,
+# uncached — into the LLM prompt on every investigation (an estimated 16k-27k tokens).
+# LocalPlaybookAdapter already solves exactly this for its own 12 playbooks (a
+# technique-ID-overlap candidate pool computed before any LLM call, mirroring the
+# upstream skills registry's own "frontmatter scan before full load" design) — this
+# ports that same pattern to the much larger skill index. `mitre_attack` is already
+# backfilled onto every index entry by scripts/enrich_skills_index.py; this makes
+# that previously-fetched-but-unused field load-bearing.
+DEFAULT_MIN_SKILL_CANDIDATE_POOL = 15
+
+
+def _narrow_skill_index_by_technique_overlap(
+    skill_index: list[dict],
+    validated_technique_ids: set[str],
+    min_candidates: int = DEFAULT_MIN_SKILL_CANDIDATE_POOL,
+) -> tuple[list[dict], str | None]:
+    """Narrows skill_index to entries whose 'mitre_attack' list shares at least one ID
+    with validated_technique_ids (union overlap across all validated techniques, not
+    per-technique intersection — mirrors LocalPlaybookAdapter's set(...) & wanted).
+
+    Returns (candidate_pool, fallback_reason):
+      - fallback_reason is None  -> narrowing succeeded; candidate_pool is a NEW list
+        (skill_index itself is never mutated).
+      - fallback_reason is a str -> narrowing was unsafe; candidate_pool is
+        skill_index UNCHANGED (today's "send everything" baseline), and the string
+        explains why, for the caller to log. Must never silently under-select
+        relative to that baseline.
+
+    Never raises: a missing/malformed 'mitre_attack' field on any entry (absent key,
+    None, wrong type) is treated as "no techniques" for that entry, not an error.
+    """
+    if not validated_technique_ids:
+        return skill_index, (
+            "no validated technique IDs to filter by (0 validated techniques) "
+            "— using full skill index"
+        )
+
+    candidates = [
+        entry
+        for entry in skill_index
+        if isinstance(entry.get("mitre_attack"), list)
+        and set(entry["mitre_attack"]) & validated_technique_ids
+    ]
+
+    if len(candidates) < min_candidates:
+        return skill_index, (
+            f"only {len(candidates)} skill(s) matched by MITRE technique-ID overlap "
+            f"against {sorted(validated_technique_ids)} (min {min_candidates} "
+            f"required) — using full skill index"
+        )
+
+    return candidates, None
+
+
+def _format_skill_index_line(entry: dict) -> str:
+    """Same 'name (subdomain) — description' shape as before, plus the skill's own
+    MITRE technique IDs when present — cheap to include once the candidate pool is
+    already bounded, and gives the LLM the same frontmatter-scan signal (tags/
+    technique coverage) the upstream registry's own agent-loading pattern uses."""
+    name = entry.get("name", "")
+    subdomain = entry.get("subdomain", "")
+    description = entry.get("description", "")
+    mitre = entry.get("mitre_attack")
+    tag = f" [MITRE: {', '.join(mitre)}]" if isinstance(mitre, list) and mitre else ""
+    return f"{name} ({subdomain}){tag} — {description}"
+
+
 class SkillSelector:
     SYSTEM_PROMPT = """You are a skill-selection agent inside a security investigation pipeline.
 
@@ -335,7 +403,16 @@ Respond with ONLY a JSON object — no prose, no markdown code fences — exactl
         validated: TechniqueValidatorOutput,
         provider: LLMProvider,
     ) -> SkillSelectorOutput:
-        user_prompt = self._build_user_prompt(input, validated)
+        validated_ids = {t.technique_id for t in validated.techniques if t.technique_id}
+        candidate_index, fallback_reason = _narrow_skill_index_by_technique_overlap(
+            input.skill_index, validated_ids
+        )
+        if fallback_reason:
+            print(
+                f"[casky_pipeline:pipeline] SkillSelector: {fallback_reason}",
+                file=sys.stderr,
+            )
+        user_prompt = self._build_user_prompt(input, validated, candidate_index)
         # Directly observed truncating mid-JSON at the 2048 default on real evidence
         # with 3+ validated techniques (multiple selections × rationale/evidence_focus/
         # evidence_anchors per selection adds up fast) — 4096 is the fix, not a guess.
@@ -418,7 +495,11 @@ Respond with ONLY a JSON object — no prose, no markdown code fences — exactl
             return SkillSelectorOutput()
 
     @staticmethod
-    def _build_user_prompt(input: ClassifierInput, validated: TechniqueValidatorOutput) -> str:
+    def _build_user_prompt(
+        input: ClassifierInput,
+        validated: TechniqueValidatorOutput,
+        candidate_index: list[dict],
+    ) -> str:
         techniques_json = json.dumps(
             [
                 {
@@ -433,8 +514,7 @@ Respond with ONLY a JSON object — no prose, no markdown code fences — exactl
             indent=2,
         )
         skill_index_lines = "\n".join(
-            f'{entry.get("name", "")} ({entry.get("subdomain", "")}) — {entry.get("description", "")}'
-            for entry in input.skill_index
+            _format_skill_index_line(entry) for entry in candidate_index
         ) or "(skill index is empty)"
         return (
             f"VALIDATED TECHNIQUES:\n{techniques_json}\n\n"
