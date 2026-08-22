@@ -17,8 +17,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # CVE MCP Server — installed in a venv to avoid pip version constraints on Ubuntu 22.04
 # (Ubuntu 22.04 ships pip 22 which doesn't support --break-system-packages)
+#
+# mcp is pinned to the 1.x line: cve-mcp-server (installed unpinned from git HEAD)
+# imports `mcp.server.fastmcp`, which the upstream `mcp` SDK dropped/moved in its
+# 2.0.0 release — pulling in the 2.x resolver default breaks the import at
+# runtime with `ModuleNotFoundError: No module named 'mcp.server.fastmcp'`.
+# Pinning here (rather than on casky-console's own separate `mcp` client-side
+# install below, which is unaffected) keeps the fix scoped to the venv that
+# actually needs it. Re-evaluate this pin if/when cve-mcp-server ships a
+# 2.x-compatible release.
 RUN python3 -m venv /opt/cve-mcp \
     && /opt/cve-mcp/bin/pip install --no-cache-dir \
+       "mcp<2" \
        "git+https://github.com/mukul975/cve-mcp-server.git"
 
 # AI agent CLIs — install via package.json so 'overrides' pins vulnerable
