@@ -344,7 +344,9 @@ make test-compose    # test the full docker-compose stack
 make scan            # Trivy HIGH/CRITICAL scan
 make lint            # shellcheck casky.sh
 make shell           # bash shell inside the runner image
-make run SKILL=web-app AGENT=claude
+make run SKILL=web-app AGENT=claude   # needs `docker compose up -d` first — runs against
+                                       # the live stack (DB + skills library + network), same
+                                       # as `docker exec -it casky-runner casky run ...`
 make verify SKILL=web-app   # confirm skill-lab has all required tools
 ```
 

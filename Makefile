@@ -50,16 +50,13 @@ shell: build ## Open a bash shell inside the runner
 	  -v /var/run/docker.sock:/var/run/docker.sock \
 	  $(LOCAL_IMAGE) bash
 
-run: build ## Run a skill  (SKILL=web-app AGENT=claude)
-	docker run --rm \
-	  -e ANTHROPIC_API_KEY \
-	  -e GOOGLE_API_KEY \
-	  -e GEMINI_API_KEY \
-	  -e CASKY_RUN_ID \
-	  -e CASKY_TOKEN \
-	  -v /var/run/docker.sock:/var/run/docker.sock \
-	  $(LOCAL_IMAGE) \
-	  casky run $(SKILL) --agent $(AGENT)
+run: ## Run a skill against the running compose stack (SKILL=web-app AGENT=claude) — needs `docker compose up -d` first
+	@if ! docker compose ps --status running --format '{{.Service}}' 2>/dev/null | grep -qx runner; then \
+	  echo "casky-runner isn't up. Start the stack first:"; \
+	  echo "  docker compose up -d"; \
+	  exit 1; \
+	fi
+	docker compose exec -it runner casky run $(SKILL) --agent $(AGENT)
 
 verify: ## Verify skill-lab has required tools  (SKILL=web-app)
 	@PASS=0; FAIL=0; \
