@@ -1,0 +1,46 @@
+{
+  "name": "@casky/ui-kit",
+  "version": "0.0.1",
+  "description": "Pure presentational React components, types, and formatting utilities shared between casky.ai apps/web and the self-hosted casky-runner app. Zero dependency on auth, workspaces, billing, or @casky/supabase-client.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": "./src/index.ts",
+    "./severity-badge": "./src/components/severity-badge.tsx",
+    "./finding-card": "./src/components/finding-card.tsx",
+    "./mitre-technique-chip": "./src/components/mitre-technique-chip.tsx",
+    "./remediation-table": "./src/components/remediation-table.tsx",
+    "./key-findings-table": "./src/components/key-findings-table.tsx",
+    "./markdown-report": "./src/components/markdown-report.tsx",
+    "./investigation-step-row": "./src/components/investigation-step-row.tsx",
+    "./confidence-meter": "./src/components/confidence-meter.tsx",
+    "./types": "./src/types.ts",
+    "./tokens": "./src/tokens.ts",
+    "./cn": "./src/lib/cn.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "peerDependencies": {
+    "react": ">=19",
+    "react-dom": ">=19"
+  },
+  "dependencies": {
+    "lucide-react": "^0.577.0",
+    "tailwind-merge": "^3.5.0",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1"
+  },
+  "devDependencies": {
+    "@testing-library/react": "^16.3.2",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "happy-dom": "^20.9.0",
+    "react": "19.2.4",
+    "react-dom": "19.2.4",
+    "typescript": "^5",
+    "vitest": "^4.1.6"
+  }
+}
