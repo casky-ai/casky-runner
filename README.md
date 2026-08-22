@@ -159,6 +159,44 @@ mechanics.
 
 ---
 
+## Casky UI — browsing investigations
+
+`casky-ui` is a self-hosted web app (`ui` service — no extra flag or profile needed, `docker compose
+up -d` starts it alongside `runner`/`db`) for browsing everything the CLI has persisted: past
+investigations, findings, remediation status, reports, and organizational memory — without a
+terminal. It's read/browse-first, plus two narrow write paths (finding status, remediation notes);
+investigations themselves are still started via `casky harness`/`casky run`, not from the UI.
+
+**Requires Postgres** — unlike the CLI harness (which falls back to JSON files), the UI has no
+file-based fallback: `DATABASE_URL` must be set and reachable. This is already true by default —
+`docker compose up -d` wires `ui` to the same bundled `db` service `runner` uses, no extra
+configuration needed. If you've pointed `DATABASE_URL` at your own Postgres (see BYO-DB above), the
+UI reads from that instead — same DB, two clients.
+
+**First login** — the UI has a single local admin account, no signup, no multi-user support:
+- Set `CASKY_UI_ADMIN_PASSWORD` in `.env` before first boot to choose your own password, **or**
+- Leave it unset and one is generated for you on first boot — printed once to the container logs:
+  ```bash
+  docker compose logs ui | grep -A5 "ADMIN PASSWORD"
+  ```
+  It's stored (hashed, via Node's `scrypt`) in `runtime_settings` and does **not** regenerate on
+  restart — save it somewhere, since the boxed log message really is the only place you'll see it in
+  plaintext. To rotate it later, set `CASKY_UI_ADMIN_PASSWORD` and restart the `ui` container.
+
+**Where it's reachable** — `http://127.0.0.1:8766` by default (`CASKY_UI_PORT` to change the port),
+bound to localhost only. Set `CASKY_UI_HOST=0.0.0.0` to expose it beyond your machine — there's no
+RBAC, only the single admin login, so think about your network before doing that on anything but a
+trusted host.
+
+**What's there**: `Dashboard` (investigation/finding counts) · `Investigations` (list + an 8-tab
+detail view — Overview/Evidence/Context/Plan/Execution/Findings/Remediation/Outcome-Memory, the last
+showing both related past investigations and organizational memory matches for that investigation)
+· `Findings` (cross-investigation, filterable) · `Remediation` (findings still needing action) ·
+`Reports` (rendered consolidated reports, `.md` download) · `Settings` (default agent/model/skills
+path, stored in `runtime_settings`).
+
+---
+
 ## Two ways to investigate — and where the lab targets fit in
 
 These are independent, unrelated workflows. Pick whichever matches what you're starting from — you
@@ -243,6 +281,9 @@ mount, and evidence size limits.
 | `GITHUB_TOKEN` | GitHub Copilot CLI agent | Only if using `--agent copilot` |
 | `CASKY_MODEL_PROVIDER` / `CASKY_MODEL_BASE_URL` / `CASKY_MODEL_NAME` / `CASKY_MODEL_API_KEY` | BYO-LLM for the classifier pipeline | Optional — defaults to Anthropic |
 | `DATABASE_URL` | Point at your own Postgres instead of the bundled `db` service | Optional |
+| `CASKY_UI_ADMIN_PASSWORD` | Casky UI's single-admin login. Leave unset to auto-generate one on first boot (printed once to `docker compose logs ui`) | Optional |
+| `CASKY_UI_PORT` | Host port Casky UI is reachable on | Optional, default `8766` |
+| `CASKY_UI_HOST` | Bind address for `CASKY_UI_PORT` — `0.0.0.0` to expose beyond localhost (no RBAC, think first) | Optional, default `127.0.0.1` |
 | `SKILL_LAB_NAME` | Name of the running skill container | Optional, default `skill-lab` |
 | `CASKY_APP_URL` | Platform URL override | Optional, only relevant if syncing to casky.ai |
 | `CASKY_API_KEY` | **This is what switches `casky harness` into platform mode** (fetches/syncs investigation plans with casky.ai). Leave unset for fully local/offline use — this is the one that matters for "am I in local or platform mode?" | Optional |
@@ -330,7 +371,11 @@ casky-runner/
 ├── casky_db/                 Postgres persistence layer — investigations, outcomes, feedback, memories
 │   ├── store.py               Plain-SQL repository functions (psycopg3, no ORM)
 │   └── migrations/            Numbered SQL files, applied by `casky db migrate`
-├── docker-compose.yml        Full local stack: runner, skills library, Postgres, lab targets
+├── casky-ui/                 Self-hosted Next.js UI — reads casky_db directly, see "Casky UI" above
+│   ├── app/                   Dashboard/Investigations/Findings/Remediation/Reports/Settings
+│   ├── lib/                   Postgres query layer (lib/db.ts), single-admin auth (lib/auth.ts)
+│   └── vendor/ui-kit/         Vendored copy of @casky/ui-kit (not published yet — see VENDORED.md)
+├── docker-compose.yml        Full local stack: runner, skills library, Postgres, UI, lab targets
 ├── docker/                   Dockerfiles for skill/target/MCP containers
 ├── skills/                   Per-skill tool manifests (used by `casky verify`)
 ├── tests/                    Shell-based image/compose integration tests

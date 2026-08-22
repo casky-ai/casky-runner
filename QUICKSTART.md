@@ -149,6 +149,14 @@ docker exec skill-lab curl -s -I http://target/ | head -3
 Expect `HTTP/1.1 200` or `302 Found`. If tools are still missing, the skill image may still be
 pulling — wait ~30s and retry `casky verify`.
 
+And confirm Casky UI is up (no extra flag needed — it's part of the default `docker compose up`):
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8766/login
+```
+
+Expect `200`. See step 7 below for first login.
+
 ## 5. Browse the skills library
 
 ```bash
@@ -227,6 +235,30 @@ Your agent will suggest a command; run it yourself in another terminal (`docker 
 <command>`) and paste the output back, or — if your agent has its own `docker exec` access — just
 tell it to run the commands itself and report back.
 
+## 7. Browse results in Casky UI
+
+Everything from step 6 — the plan, findings, remediation status, the outcome you recorded, and any
+organizational memory it surfaced — is queryable from a browser, not just the terminal.
+
+**First login:**
+```bash
+docker compose logs ui | grep -A5 "ADMIN PASSWORD"
+```
+That prints the auto-generated admin password once (only on first boot — it won't show up again on
+a restart, and the password itself doesn't change on restart either). If you'd rather set your own,
+put `CASKY_UI_ADMIN_PASSWORD=<your-choice>` in `.env` *before* first bringing the stack up.
+
+Open **http://127.0.0.1:8766**, log in, and check:
+- **Dashboard** — investigation/finding counts
+- **Investigations → [your investigation]** — the 8-tab detail view; `Execution` is the
+  chronological trace of what actually ran, `Outcome / Memory` is where a recorded outcome and any
+  extracted organizational memory show up
+- **Findings** — cross-investigation, filterable by severity/status
+- **Reports** — the consolidated report, downloadable as Markdown
+
+It's read/browse plus two narrow write paths (finding status, remediation notes) — you still start
+new investigations from the CLI (`casky harness`/`casky run`), not from the UI.
+
 ---
 
 ## Skill image categories (18 total)
@@ -269,6 +301,9 @@ affect which skill gets selected, only how the resulting step is labeled.
 | `SKILL_LAB_NAME` | `skill-lab` | Skill container name |
 | `SKILL_IMAGE` | `ghcr.io/casky-ai/skills/web-app:latest` | Which of the 18 real skill tool images `skill-lab` is built from — `make lab TARGET=<name>` sets this to match automatically; see the target/category table above |
 | `TARGET_IMAGE` | `alpine:latest` | Target container image, `lab-custom` profile only |
+| `DATABASE_URL` | bundled `db` service | Point Casky UI + the harness's persistence layer at your own Postgres instead |
+| `CASKY_UI_ADMIN_PASSWORD` | auto-generated on first boot | Casky UI's single-admin login — see step 7 |
+| `CASKY_UI_PORT` | `8766` | Host port Casky UI is reachable on |
 
 See `.env.example` for the complete annotated list, including BYO-LLM (`CASKY_MODEL_*`) and CVE
 enrichment API keys (all optional — NVD + EPSS + CISA KEV work with none of them set).
@@ -332,6 +367,16 @@ docker exec -it casky-runner casky run network
 ---
 
 ## Troubleshooting
+
+**Starting completely fresh (ghost containers, stale volumes, switching targets)**
+
+The lighter fix below (remove orphans, retry) covers most cases. For a full reset — no leftover
+containers, no stale Postgres data, nothing holding a reference to a since-recreated network:
+```bash
+docker rm -f casky-runner casky-skills casky-db casky-ui skill-lab casky-target casky-target-db 2>/dev/null
+docker compose down -v   # -v also removes volumes (investigation data, Postgres data) — omit to keep them
+docker compose --profile lab-dvwa up -d   # or whichever target you're using
+```
 
 **Skill image tools missing / wrong category after `casky verify`**
 

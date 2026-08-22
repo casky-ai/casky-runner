@@ -24,9 +24,10 @@ Three BYO axes, all independently configurable:
 | `casky.sh` | The `casky` wrapper CLI (`casky run`, `casky verify`, `casky harness`, `casky skills`) — agent-CLI dispatch lives here. |
 | `casky_pipeline/` | 4-stage classifier pipeline + adapters + memory layer + BYO-LLM provider layer. See module map below. |
 | `casky_db/` | Postgres persistence layer (`store.py` plain-SQL repository functions, `migrations/`) — optional, see BYO-DB above. |
+| `casky-ui/` | Self-hosted Next.js UI reading the `casky_db` schema directly — see README's "Casky UI" section. Requires `DATABASE_URL`; no JSON-file fallback (unlike the harness). |
 | `docker-compose.yml`, `docker/` | Lab network services: runner, CVE MCP server, skill containers, target containers (DVWA/Juice Shop/custom). |
 | `tests/` | Shell-based integration tests (`run-tests.sh`, `compose-test.sh`, `fixtures/`) — pre-date the adapter/pipeline system, cover the container/CLI layer. |
-| `plans/`, `skills/` | Sample plans and the local skills library layout. |
+| `skills/` | Per-skill tool manifests, used by `casky verify`. |
 | `PHASE1_CONTRACT.md` | Original interface contract for the pipeline/adapter work — useful background on the design, not a live status doc; some of its "future work" items (BYO-DB, historical/memory adapters) have since shipped. |
 
 ### `casky_pipeline/` module map
