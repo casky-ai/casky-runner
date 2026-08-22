@@ -38,11 +38,13 @@ RUN groupadd --gid 1001 casky \
     && groupadd -f docker \
     && usermod -aG docker casky
 
-# Agentic harness — Python venv with rich + requests + mcp + anthropic + pyyaml
+# Agentic harness — Python venv with rich + requests + mcp + anthropic + pyyaml + psycopg
 # (pyyaml added in Phase 1 for casky_pipeline's LocalPlaybookAdapter, which parses
-# the starter playbook YAML set)
+# the starter playbook YAML set; psycopg[binary] added in Part B for casky_db's
+# Postgres persistence layer — [binary] bundles libpq so no extra apt packages
+# are needed for the C extension to build/load)
 RUN python3 -m venv /opt/casky-console \
-    && /opt/casky-console/bin/pip install --no-cache-dir rich requests mcp anthropic pyyaml
+    && /opt/casky-console/bin/pip install --no-cache-dir rich requests mcp anthropic pyyaml "psycopg[binary]"
 
 # Report output directory (persisted via volume mount in docker-compose).
 # /var/casky itself also needs to be writable by the non-root 'casky' user
@@ -61,6 +63,11 @@ COPY skills/ /etc/casky/skills/
 # provider layer, starter playbooks) — harness.py does `import casky_pipeline`,
 # so it needs to resolve on the venv interpreter's path.
 COPY casky_pipeline/ /opt/casky-console/lib/casky_pipeline/
+# Part B persistence layer (migrations, migrate.py, store.py, json_import.py)
+# — harness.py does `from casky_db import store`, and casky.sh's `db`
+# subcommand runs it as `python3 -m casky_db.migrate` / `casky_db.json_import`,
+# so it needs to resolve on the same PYTHONPATH as casky_pipeline above.
+COPY casky_db/ /opt/casky-console/lib/casky_db/
 # Skills index enrichment — fills in the subdomain/tags/mitre_attack data
 # missing from the flat index.json shipped in the skills-library image (see
 # scripts/enrich_skills_index.py for the full explanation). Run by

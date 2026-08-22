@@ -61,6 +61,12 @@ def isolated_config(tmp_path: Path, skills_library: Path, monkeypatch):
     monkeypatch.setattr(harness.config, "skills_library_path", skills_library)
     monkeypatch.setattr(harness.config, "plans_dir", tmp_path / "plans")
     monkeypatch.setattr(harness.config, "api_key", "")  # force local mode
+    # Force the pre-Postgres JSON-file fallback regardless of whatever
+    # DATABASE_URL happens to be set in the ambient environment this test
+    # runs in — this file asserts on the on-disk investigation_steps JSON
+    # shape specifically (see Part B's own test_harness_db_fallback.py for
+    # the DB-backed-vs-JSON-fallback behavior itself).
+    monkeypatch.setattr(harness.config, "database_url", "")
     return harness.config
 
 

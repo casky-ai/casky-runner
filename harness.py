@@ -41,9 +41,17 @@ import requests
 # See PHASE1_CONTRACT.md for the interface contract these modules implement.
 from casky_pipeline.adapters.base import AdapterConfig, AdapterEntities, run_adapters
 from casky_pipeline.adapters.cve_mcp_adapter import CveMcpAdapter
+from casky_pipeline.adapters.local_history_adapter import LocalHistoryAdapter
 from casky_pipeline.adapters.local_playbook_adapter import LocalPlaybookAdapter
+from casky_pipeline.adapters.memory_adapter import MemoryAdapter
 from casky_pipeline.llm_providers import build_provider_from_env
+from casky_pipeline.memory import extract_and_store_memories
 from casky_pipeline.pipeline import ClassifierInput, PipelineEntities, run_pipeline
+
+# Postgres persistence layer (Part B). casky_db.store must not import
+# harness.py (see its module docstring) — this is a one-directional import,
+# so no circular-import risk.
+from casky_db import store as db_store
 from rich.console import Console
 from rich.layout import Layout
 from rich.live import Live
@@ -124,6 +132,12 @@ class Config:
     concurrency: int = field(default_factory=lambda: int(os.environ.get("CASKY_CONCURRENCY", "4")))
     plans_dir: Path = field(default_factory=lambda: Path.home() / ".casky" / "plans")
     skills_library_path: Path = field(default_factory=lambda: Path(os.environ.get("SKILLS_LIBRARY_PATH", "/opt/skills-library")))
+    # Postgres persistence layer (casky_db/) — optional. Empty means "no DB
+    # configured", the real, expected transitional state for local mode
+    # before Postgres is set up; every DB-backed code path below falls back
+    # to the pre-existing JSON-file storage when this is empty or the
+    # database turns out to be unreachable at call time.
+    database_url: str = field(default_factory=lambda: os.environ.get("DATABASE_URL", ""))
 
     @property
     def is_local_mode(self) -> bool:
@@ -349,6 +363,42 @@ def fetch_platform_playbooks(technique_ids: list[str]) -> dict[str, Any]:
         return {}
 
 
+# A memory only headlines the CLI above this bar — the retrieval floor inside
+# find_relevant_memories() (MIN_RETRIEVAL_CONFIDENCE) is a "worth informing the
+# classifier prompt" bar; this is a separate, higher "worth headlining the CLI"
+# bar, mirroring the SaaS product's plan-client.tsx MEMORY_HEADLINE_THRESHOLD.
+MEMORY_HEADLINE_THRESHOLD = 0.6
+
+
+def _print_memory_verdict(context_nodes: list) -> None:
+    """Expose the OUTCOME of organizational memory, never its machinery — no
+    node counts, no adapter names, no raw graph JSON. Same narrative shape as
+    the SaaS product's MemoryVerdictCard: headline + confidence tier +
+    statement/rationale + result + (when no escalation) a time-saved estimate."""
+    memory_nodes = [n for n in context_nodes if n.type == "memory"]
+    if not memory_nodes:
+        return
+
+    top = max(memory_nodes, key=lambda n: n.properties.get("confidence", 0.0))
+    confidence = float(top.properties.get("confidence", 0.0))
+    if confidence < MEMORY_HEADLINE_THRESHOLD:
+        return
+
+    escalate = bool(top.properties.get("escalation_recommended", True))
+    statement = top.properties.get("statement") or top.label
+    rationale = top.properties.get("rationale", "")
+    tier = "High" if confidence >= 0.8 else "Medium"
+    headline = "Requires review" if escalate else "Expected activity"
+    body = f"{statement}. {rationale}" if rationale else statement
+    result = "Escalation recommended." if escalate else "No escalation required. Analyst time saved: ~15–20 min."
+
+    console.print(Panel(
+        f"[bold]{headline} — {tier} confidence[/bold]\n{rmarkup(body)}\n\n{result}",
+        border_style="yellow" if escalate else "green",
+        title="Organizational memory",
+    ))
+
+
 def generate_local_plan(evidence_text: str) -> Plan | None:
     library = LocalSkillsLibrary()
     if not library.available:
@@ -385,9 +435,9 @@ def generate_local_plan(evidence_text: str) -> Plan | None:
         hostnames=entities.hostnames,
     )
     adapter_results = asyncio.run(run_adapters(
-        [CveMcpAdapter(), LocalPlaybookAdapter(provider=provider)],
+        [CveMcpAdapter(), LocalPlaybookAdapter(provider=provider), LocalHistoryAdapter(), MemoryAdapter()],
         adapter_entities,
-        AdapterConfig(extra={"evidence_text": evidence_text}),
+        AdapterConfig(extra={"evidence_text": evidence_text, "database_url": config.database_url}),
     ))
 
     context_nodes = []
@@ -424,10 +474,12 @@ def generate_local_plan(evidence_text: str) -> Plan | None:
             cve_enrichment.update(platform_cves)
 
     console.print("[dim]Phase C: Finding similar plans (platform, informational)…[/dim]")
-    # NOTE: local-history similarity (customer-owned investigation memory) is Phase 2
-    # (LocalHistoryAdapter, requires the Postgres investigation-object store). For now
-    # this stays as the pre-existing platform-mode-only lookup, informational only —
-    # it does not yet feed the classifier pipeline below.
+    # This is the pre-existing PLATFORM-mode-only lookup (find_similar_local_plans) —
+    # informational only, does not feed the classifier pipeline below. Do not confuse
+    # this with LocalHistoryAdapter/MemoryAdapter above (Phase B's adapter fan-out):
+    # those run locally (no platform account needed), their nodes/edges/gaps DO feed
+    # the classifier pipeline via context_nodes/context_edges, and their output is
+    # informational vs. this. Two independent lookups; only this one is legacy/inert.
     similar_plans = find_similar_local_plans(evidence_text)
     if config.api_key:
         fetch_platform_playbooks(entities.technique_ids)  # informational only, unchanged from before
@@ -550,48 +602,74 @@ def generate_local_plan(evidence_text: str) -> Plan | None:
             confidence=avg_confidence,
         )
 
-        config.plans_dir.mkdir(parents=True, exist_ok=True)
-        plan_file = config.plans_dir / f"{plan.id}.json"
-        plan_data = {
-            "id": plan.id,
-            "domain": plan.domain,
-            "evidence_text": plan.evidence_text,
-            "status": plan.status,
-            "created_at": plan.created_at,
-            "cve_references": [
-                {
-                    "cve_id": r.cve_id,
-                    "cvss_score": r.cvss_score,
-                    "cvss_severity": r.cvss_severity,
-                    "is_kev": r.is_kev,
-                    "technique_ids": r.technique_ids,
-                    "skill_ids": r.skill_ids,
-                }
-                for r in plan.cve_references
-            ],
-            "evidence_gaps": plan.evidence_gaps,
-            "confidence": plan.confidence,
-            "investigation_steps": [
-                {
-                    "id": s.id,
-                    "skill_slug": s.skill_slug,
-                    "skill_category": s.skill_category,
-                    "skill_document": s.skill_document,
-                    "technique_id": s.technique_id,
-                    "technique_name": s.technique_name,
-                    "rationale": s.rationale,
-                    "evidence_focus": s.evidence_focus,
-                    "step_order": s.step_order,
-                    "status": s.status,
-                }
-                for s in plan.steps
-            ],
-        }
-        plan_file.write_text(json.dumps(plan_data, indent=2))
-        console.print(f"[green]Plan saved:[/green] {plan_file}")
+        # Postgres persistence (Part B) replaces the JSON-file write when
+        # DATABASE_URL is configured and reachable. Local mode without
+        # Postgres is a real, expected transitional state — never hard-break
+        # it; fall back to the pre-existing plans_dir/<plan.id>.json write
+        # with a clear console message instead.
+        saved_to_db = False
+        if config.database_url:
+            try:
+                db_store.create_investigation(plan, database_url=config.database_url)
+                saved_to_db = True
+                console.print(f"[green]Investigation saved to Postgres:[/green] {plan.id}")
+            except db_store.DatabaseUnavailable as e:
+                console.print(
+                    f"[yellow]DATABASE_URL is set but unreachable ({rmarkup(str(e))}) — "
+                    "falling back to local JSON-file storage.[/yellow]"
+                )
+            except Exception as e:
+                console.print(
+                    f"[yellow]Could not save investigation to Postgres ({rmarkup(str(e))}) — "
+                    "falling back to local JSON-file storage.[/yellow]"
+                )
+
+        if not saved_to_db:
+            config.plans_dir.mkdir(parents=True, exist_ok=True)
+            plan_file = config.plans_dir / f"{plan.id}.json"
+            plan_data = {
+                "id": plan.id,
+                "domain": plan.domain,
+                "evidence_text": plan.evidence_text,
+                "status": plan.status,
+                "created_at": plan.created_at,
+                "cve_references": [
+                    {
+                        "cve_id": r.cve_id,
+                        "cvss_score": r.cvss_score,
+                        "cvss_severity": r.cvss_severity,
+                        "is_kev": r.is_kev,
+                        "technique_ids": r.technique_ids,
+                        "skill_ids": r.skill_ids,
+                    }
+                    for r in plan.cve_references
+                ],
+                "evidence_gaps": plan.evidence_gaps,
+                "confidence": plan.confidence,
+                "investigation_steps": [
+                    {
+                        "id": s.id,
+                        "skill_slug": s.skill_slug,
+                        "skill_category": s.skill_category,
+                        "skill_document": s.skill_document,
+                        "technique_id": s.technique_id,
+                        "technique_name": s.technique_name,
+                        "rationale": s.rationale,
+                        "evidence_focus": s.evidence_focus,
+                        "step_order": s.step_order,
+                        "status": s.status,
+                    }
+                    for s in plan.steps
+                ],
+            }
+            plan_file.write_text(json.dumps(plan_data, indent=2))
+            console.print(f"[green]Plan saved:[/green] {plan_file}")
+
         console.print(f"[green]Confidence:[/green] {avg_confidence:.1%}")
         if plan.evidence_gaps:
             console.print(f"[yellow]Evidence gaps:[/yellow] {rmarkup(', '.join(plan.evidence_gaps[:3]))}")
+
+        _print_memory_verdict(context_nodes)
         return plan
 
     except json.JSONDecodeError as e:
@@ -628,10 +706,40 @@ class _ReportHandler(BaseHTTPRequestHandler):
         if len(parts) >= 4 and parts[0] == "api" and parts[1] == "runs" and parts[3] == "report":
             run_id = parts[2]
             _local_reports[run_id] = data
-            # Persist to disk
+            # Persist to disk — kept unconditionally (DB available or not):
+            # these files remain useful, human-inspectable transparency
+            # artifacts regardless of Postgres availability, same reasoning
+            # as generate_consolidated_report()'s REPORT.md/consolidated.json.
             reports_dir = Path("/var/casky/reports") / _local_plan_id
             reports_dir.mkdir(parents=True, exist_ok=True)
             (reports_dir / f"{run_id}.json").write_text(json.dumps(data, indent=2))
+
+            # Additive Postgres persistence (Part B). NOTE: no
+            # store.record_skill_execution() call here — this bare HTTP
+            # handler has no closure over AgentWorker/AgentResult, so it
+            # genuinely has no step_id, agent_used, model_used, exit_code, or
+            # start/end timestamps to record; inventing placeholder values
+            # for those would be worse than omitting the row. Findings are
+            # linked to the investigation directly, with skill_execution_id
+            # left NULL, rather than fabricated execution metadata.
+            if config.database_url:
+                findings = data.get("findings", [])
+                if isinstance(findings, list) and findings:
+                    try:
+                        db_store.record_findings(
+                            _local_plan_id, None, findings, database_url=config.database_url
+                        )
+                    except db_store.DatabaseUnavailable as e:
+                        console.print(
+                            f"[yellow]Could not save findings to Postgres for run "
+                            f"{rmarkup(run_id)}: {rmarkup(str(e))}[/yellow]"
+                        )
+                    except Exception as e:
+                        console.print(
+                            f"[yellow]Could not save findings to Postgres for run "
+                            f"{rmarkup(run_id)}: {rmarkup(str(e))}[/yellow]"
+                        )
+
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
@@ -943,7 +1051,8 @@ def generate_consolidated_report(plan: Plan, results: list[Any]) -> Path:
         md_lines.append("No findings recorded.")
 
     report_md = reports_dir / "REPORT.md"
-    report_md.write_text("\n".join(md_lines))
+    markdown_text = "\n".join(md_lines)
+    report_md.write_text(markdown_text)
 
     # JSON consolidated
     consolidated = {
@@ -955,6 +1064,27 @@ def generate_consolidated_report(plan: Plan, results: list[Any]) -> Path:
         "summaries": summaries,
     }
     (reports_dir / "consolidated.json").write_text(json.dumps(consolidated, indent=2))
+
+    # Additive Postgres persistence (Part B) — REPORT.md/consolidated.json
+    # above are kept unconditionally either way; they remain useful
+    # human-readable transparency artifacts regardless of DB availability.
+    # risk_rating is derived from the highest-severity finding (findings_all
+    # is already severity-sorted above) rather than invented separately.
+    if config.database_url:
+        risk_rating = str(findings_all[0].get("severity", "")) if findings_all else None
+        try:
+            db_store.save_consolidated_report(
+                investigation_id=plan.id,
+                summary="\n".join(summaries),
+                risk_rating=risk_rating,
+                markdown=markdown_text,
+                report_json=consolidated,
+                database_url=config.database_url,
+            )
+        except db_store.DatabaseUnavailable as e:
+            console.print(f"[yellow]Could not save consolidated report to Postgres: {rmarkup(str(e))}[/yellow]")
+        except Exception as e:
+            console.print(f"[yellow]Could not save consolidated report to Postgres: {rmarkup(str(e))}[/yellow]")
 
     return report_md
 
@@ -1176,6 +1306,69 @@ async def _run_harness(plan: Plan, steps: list[Step]) -> None:
         report_path = generate_consolidated_report(plan, harness.results)
 
     ui.show_summary(harness, report_path)
+
+    if config.is_local_mode:
+        _capture_outcome_and_extract_memory(plan)
+
+
+def _capture_outcome_and_extract_memory(plan: Plan) -> None:
+    """Prompts for the analyst-written outcome — the same quality gate the
+    SaaS product's outcome route enforces (human-confirmed judgment, not an
+    auto-summary) before a completed investigation is eligible for memory
+    extraction. Never blocks or crashes the CLI: an empty/skipped outcome, or
+    any extraction failure, just means no memory was captured this run."""
+    console.print()
+    outcome_summary = Prompt.ask(
+        "[cyan]Outcome summary[/cyan] (what did you actually find? Enter to skip)",
+        default="",
+    )
+    if not outcome_summary.strip():
+        return
+
+    confirmed_raw = Prompt.ask(
+        "[cyan]Confirmed MITRE technique IDs[/cyan] (comma-separated, Enter for none)",
+        default="",
+    )
+    confirmed_technique_ids = [t.strip() for t in confirmed_raw.split(",") if t.strip()]
+
+    if config.database_url:
+        try:
+            db_store.record_outcome(
+                plan.id, outcome_summary.strip(), confirmed_technique_ids,
+                database_url=config.database_url,
+            )
+        except db_store.DatabaseUnavailable as e:
+            console.print(f"[yellow]Could not record outcome to Postgres ({rmarkup(str(e))}) — memory extraction skipped.[/yellow]")
+            return
+        except Exception as e:
+            console.print(f"[yellow]Could not record outcome to Postgres ({rmarkup(str(e))}) — memory extraction skipped.[/yellow]")
+            return
+    # JSON-file mode has no separate "outcome" record to update (the plan file
+    # already has status/steps; outcome_summary is passed straight into the
+    # investigation dict below) — nothing to persist here beyond what
+    # extract_and_store_memories() itself writes.
+
+    investigation = {
+        "id": plan.id,
+        "domain": plan.domain,
+        "evidence_text": plan.evidence_text,
+        "confidence": plan.confidence,
+        "outcome_summary": outcome_summary.strip(),
+        "confirmed_technique_ids": confirmed_technique_ids,
+        "steps": [{"technique_id": s.technique_id, "skill_slug": s.skill_slug} for s in plan.steps],
+        "feedback": [],  # per-step feedback capture is a future CLI addition; extraction still runs without it
+    }
+
+    try:
+        provider = build_provider_from_env()
+        result = extract_and_store_memories(investigation, provider, database_url=config.database_url)
+        stored = result.get("stored", 0)
+        if stored:
+            console.print(f"[green]Captured {stored} organizational memor{'y' if stored == 1 else 'ies'} from this investigation.[/green]")
+        elif result.get("skipped_reason"):
+            console.print(f"[dim]No memory captured: {rmarkup(result['skipped_reason'])}[/dim]")
+    except Exception as e:
+        console.print(f"[yellow]Memory extraction failed (non-fatal): {rmarkup(str(e))}[/yellow]")
 
 
 # ── Interactive guided investigation ──────────────────────────────────────────

@@ -68,4 +68,25 @@ else
   echo "[casky] Skills library not mounted at ${SKILLS_LIBRARY_PATH} — skipping index enrichment" >&2
 fi
 
+# Apply casky_db/migrations/*.sql against DATABASE_URL, if configured.
+# Non-fatal either way: DATABASE_URL unset is a real, expected transitional
+# state (local mode falls back to the pre-Postgres JSON-file storage — see
+# harness.py's generate_local_plan()), and a DB that's set but not yet up
+# (e.g. compose's `db` service still starting despite the healthcheck/
+# depends_on ordering, or an external Postgres that's briefly unreachable)
+# must not prevent the container from starting — `casky db migrate` itself
+# already degrades to a clear stderr message + non-zero exit rather than a
+# raw traceback (see casky_db/migrate.py), so this only needs to not let
+# `set -e` above turn that into a hard container-startup failure.
+if [[ -n "${DATABASE_URL:-}" ]]; then
+  echo "[casky] DATABASE_URL is set — applying casky_db migrations..."
+  if casky db migrate; then
+    echo "[casky] casky_db migrations applied"
+  else
+    echo "[casky] Warning: casky_db migrate failed (DB unreachable or migration error) — continuing with JSON-file storage until Postgres is reachable" >&2
+  fi
+else
+  echo "[casky] DATABASE_URL not set — skipping casky_db migrations (using JSON-file storage)"
+fi
+
 exec "$@"

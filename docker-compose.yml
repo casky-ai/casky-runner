@@ -42,6 +42,11 @@ services:
       CASKY_API_KEY: ${CASKY_API_KEY:-}
       CASKY_APP_URL: ${CASKY_APP_URL:-https://casky.ai}
       CASKY_LOCAL_PORT: ${CASKY_LOCAL_PORT:-8765}
+      # Postgres persistence layer (casky_db/) — optional. Defaults to the
+      # bundled `db` service below; leave empty to keep the pre-Postgres
+      # JSON-file fallback (plans_dir / /var/casky/reports/), or point this
+      # at an external Postgres instead.
+      DATABASE_URL: ${DATABASE_URL:-postgresql://casky:${DB_PASSWORD:-casky}@db:5432/casky}
       # Legacy single-run env vars — still work for: casky run <skill>
       CASKY_RUN_ID: ${CASKY_RUN_ID:-}
       CASKY_TOKEN: ${CASKY_TOKEN:-}
@@ -101,6 +106,42 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+
+  # ── Self-hosted UI ─────────────────────────────────────────────────────────
+  # Browse investigations/findings/remediation/reports out of the same
+  # Postgres schema the harness writes to (casky_db/). Binds 127.0.0.1-only
+  # by default — set CASKY_UI_HOST=0.0.0.0 to expose it beyond localhost
+  # (there's no RBAC, only a single admin login — think before doing that on
+  # anything but a trusted host). Requires the `db` service; there's no
+  # JSON-file fallback here the way harness.py has one.
+  ui:
+    build:
+      context: ./casky-ui
+      dockerfile: Dockerfile
+    image: casky-ui:latest
+    container_name: casky-ui
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      # NOT a dependency on `runner` being healthy: runner also pulls in the
+      # multi-GB skills-library image via `casky-skills` first, which has
+      # nothing to do with browsing already-stored investigations. Instead,
+      # casky-ui applies casky_db/migrations/*.sql itself on boot (see
+      # lib/migrate.ts, run from instrumentation.ts) — the same idempotent
+      # SQL files runner's entrypoint.sh applies, copied into this image at
+      # build time (see Dockerfile) rather than duplicated. Two independent,
+      # idempotent appliers of one shared source of truth — not a fork.
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql://casky:${DB_PASSWORD:-casky}@db:5432/casky}
+      # Leave blank to auto-generate a password on first boot — printed once
+      # to `docker compose logs ui` and persisted (hashed) so it survives a
+      # restart. Set it to rotate the password on the next restart.
+      CASKY_UI_ADMIN_PASSWORD: ${CASKY_UI_ADMIN_PASSWORD:-}
+    ports:
+      - "${CASKY_UI_HOST:-127.0.0.1}:${CASKY_UI_PORT:-8766}:3000"
+    networks:
+      - casky-internal
 
   # ── Lab profile — only starts with: docker compose --profile lab up ──────────
 

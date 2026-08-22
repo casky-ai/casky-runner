@@ -229,6 +229,28 @@ Do NOT enter either container interactively.${REPORT_SECTION}"
     esac
     ;;
 
+  db)
+    # casky db migrate         — apply casky_db/migrations/*.sql (idempotent)
+    # casky db migrate-json    — one-time import of plans_dir/reports_dir JSON into Postgres
+    #
+    # Both require DATABASE_URL. Same dispatch pattern as `casky harness`:
+    # exec the venv interpreter (has psycopg installed) as a module, so
+    # relative imports inside casky_db/ resolve correctly.
+    DB_SUBCOMMAND="${1:-}"; shift || true
+    case "$DB_SUBCOMMAND" in
+      migrate)
+        exec /opt/casky-console/bin/python3 -m casky_db.migrate "$@"
+        ;;
+      migrate-json)
+        exec /opt/casky-console/bin/python3 -m casky_db.json_import "$@"
+        ;;
+      *)
+        echo "Usage: casky db {migrate|migrate-json}"
+        exit 1
+        ;;
+    esac
+    ;;
+
   harness)
     # casky harness [-i|--input-file <path>] [--auto]
     #
@@ -275,6 +297,12 @@ Do NOT enter either container interactively.${REPORT_SECTION}"
     echo "  casky skills verify <slug>"
     echo "      Verify that a skill's agent.py is accessible and skill-lab has python3."
     echo ""
+    echo "  casky db migrate"
+    echo "      Apply casky_db/migrations/*.sql against DATABASE_URL (idempotent)."
+    echo ""
+    echo "  casky db migrate-json"
+    echo "      One-time import of the on-disk plans_dir/reports_dir JSON into Postgres."
+    echo ""
     echo "Skill image categories:"
     echo "  forensics  malware  threat-intel  threat-hunting  network  cloud"
     echo "  web-app    vuln-scan  exploitation  post-exploit  incident-response"
@@ -291,5 +319,7 @@ Do NOT enter either container interactively.${REPORT_SECTION}"
     echo "  SKILL_LAB_NAME         skill container name (default: skill-lab)"
     echo "  CASKY_RUN_ID           single-run platform link (optional, for casky run)"
     echo "  CASKY_TOKEN            single-run sandbox JWT (optional, for casky run)"
+    echo "  DATABASE_URL           Postgres connection string — enables casky_db persistence"
+    echo "                         (optional; local mode without it falls back to JSON files)"
     ;;
 esac
