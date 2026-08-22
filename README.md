@@ -405,8 +405,9 @@ Being upfront about where this stands, not glossing over gaps:
 
 ## CI
 
-- **build.yml** — builds the runner image, runs Trivy (HIGH/CRITICAL exit-code 1), pushes to GHCR on `main`.
+- **build.yml** — builds the runner image, runs Trivy (HIGH/CRITICAL exit-code 1), pushes `:latest` to GHCR on every push to `main`.
 - **test.yml** — matrix over all skills; pulls the corresponding skill image, runs `casky verify`.
+- **release.yml** — cuts a versioned, pinnable release: builds + Trivy-scans + pushes both `ghcr.io/casky-ai/box/runner` and `ghcr.io/casky-ai/box/ui` under a real version tag (plus `:latest`), and publishes a GitHub Release. Triggered explicitly (`git tag vX.Y.Z && git push origin vX.Y.Z`, or manually from the Actions tab) — not on every merge, since a release is the point where a `docker pull` of a numbered version becomes a real commitment. No release has been cut yet; until one exists, build locally per the Quickstart above (`docker compose up -d --build`).
 
 ## License
 

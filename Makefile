@@ -5,7 +5,7 @@ AGENT        ?= claude
 
 .DEFAULT_GOAL := help
 
-.PHONY: help build scan lint test pytest test-compose test-compose-lab shell run verify push clean lab
+.PHONY: help build scan lint test pytest test-compose test-compose-lab shell run verify push clean lab smoke smoke-full
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?##' $(MAKEFILE_LIST) \
@@ -14,13 +14,15 @@ help: ## Show this help
 build: ## Build the runner image locally
 	docker build --progress=plain -t $(LOCAL_IMAGE) .
 
-pytest: ## Run the casky_pipeline unit test suite (adapters, pipeline, llm_providers)
+pytest: ## Run the casky_pipeline + casky_db unit test suites (adapters, pipeline, llm_providers, persistence)
 	@if [ ! -d .venv ]; then \
-	  echo "Creating .venv for casky_pipeline tests..."; \
+	  echo "Creating .venv for casky_pipeline/casky_db tests..."; \
 	  python3 -m venv .venv; \
-	  .venv/bin/pip install --quiet pytest pytest-asyncio anthropic requests pyyaml rich mcp; \
+	  .venv/bin/pip install --quiet pytest pytest-asyncio anthropic requests pyyaml rich mcp "psycopg[binary]"; \
 	fi
-	.venv/bin/python -m pytest casky_pipeline/tests/ -v
+	# casky_db/tests/ requires a reachable Postgres (DATABASE_URL) and skips
+	# cleanly without one — see casky_db/tests/conftest.py.
+	.venv/bin/python -m pytest casky_pipeline/tests/ casky_db/tests/ -v
 
 scan: build ## Run Trivy HIGH/CRITICAL scan (requires Docker)
 	docker run --rm \
@@ -99,6 +101,12 @@ lab: ## Start a lab target + matching skill-lab tools (TARGET=vulnstack|metasplo
 	esac; \
 	echo "Starting lab-$(TARGET) — skill-lab built from $$SKILL_IMAGE"; \
 	SKILL_IMAGE=$$SKILL_IMAGE docker compose --profile lab-$(TARGET) up -d --build
+
+smoke: ## Fast smoke test — casky_pipeline/casky_db unit tests + casky-ui tests/typecheck/build (no Docker Postgres needed)
+	./scripts/smoke-test.sh
+
+smoke-full: ## Full smoke test — smoke, plus a real Postgres + casky-ui end-to-end verification (needs Docker)
+	./scripts/smoke-test.sh --full
 
 push: build ## Tag and push to GHCR
 	docker tag $(LOCAL_IMAGE) $(REMOTE_IMAGE)
