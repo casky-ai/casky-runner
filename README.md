@@ -113,8 +113,13 @@ leaves whichever database you configure; nothing is centralized unless you opt i
      free. If you've configured a BYO-LLM provider, it also does a second pass reasoning about
      whether the evidence's actual narrative matches the playbook's intent — not just coincidental
      T-code overlap — and records its reasoning on the match.
-   - If either adapter fails (network hiccup, missing dependency, whatever), the investigation
-     **does not stop** — it proceeds with a noted gap instead. This is enforced by
+   - `LocalHistoryAdapter` surfaces past investigations (from `casky_db`, or a graceful gap if
+     `DATABASE_URL` isn't configured) whose CVEs/techniques/domain overlap the current one.
+   - `MemoryAdapter` retrieves organizational memory — standalone lessons extracted from past
+     investigation *outcomes*, not whole past investigations — whose entities overlap the current
+     evidence. See "Investigation memory" below.
+   - If any adapter fails (network hiccup, missing dependency, database unreachable, whatever), the
+     investigation **does not stop** — it proceeds with a noted gap instead. This is enforced by
      `run_adapters()`'s `asyncio.gather(..., return_exceptions=True)` fan-out.
 3. **4-stage classifier pipeline** (`casky_pipeline/pipeline.py`), fed by the context above:
    - `TechniqueValidator` — confirms which MITRE techniques the evidence actually supports, with
@@ -124,9 +129,33 @@ leaves whichever database you configure; nothing is centralized unless you opt i
    - `StepOrderer` and `EvidenceGap` run in parallel — one orders the steps, the other identifies
      what additional evidence would strengthen the findings
 4. **Plan review** — nothing executes automatically. You see the ordered steps with rationale before
-   anything runs.
+   anything runs. If a high-confidence memory match exists, a verdict panel appears here too — see
+   below.
 5. **Execution** — each approved step runs via your chosen `--agent`, against a skill container over
    `docker exec`. Findings come back structured (severity, remediation, MITRE mapping).
+6. **Outcome capture** — after a run finishes, `casky harness` prompts you for a short outcome
+   summary and which MITRE techniques were confirmed. This is the trigger for memory extraction (see
+   below) and the same quality gate as everything else here: a human confirms what actually
+   happened, nothing is mined from an auto-generated summary. Skip it by pressing Enter with nothing
+   typed.
+
+### Investigation memory
+
+After you record an outcome, `casky_pipeline/memory.py` runs an LLM pass over the investigation —
+the plan, the evidence, your outcome summary, and any step feedback — and extracts up to 5
+standalone memories: a claim, the reasoning behind it, which entities it applies to, a confidence
+score, whether future similar activity should still be escalated, and how long the claim stays
+trustworthy. Confidence decays on a 90-day half-life from when a memory was last reinforced, and
+drops to zero outright past its expiry.
+
+Storage is **dual-mode**, matching every other piece of state in this repo: Postgres via `casky_db`
+when `DATABASE_URL` is configured and reachable, otherwise a JSON file per investigation under
+`~/.casky/memories/` — this fallback isn't a degraded edge case, it's the default for most installs.
+On the next investigation, `MemoryAdapter` retrieves whatever matches by entity overlap and, above a
+higher "worth surfacing" confidence bar, `casky harness` prints a verdict panel before any skill
+runs — headline, the plain-language reasoning, the result, and (when no escalation is needed) an
+estimated analyst time saved. No node counts, no adapter names — the outcome of memory, not its
+mechanics.
 
 ---
 
@@ -288,14 +317,19 @@ make verify SKILL=web-app   # confirm skill-lab has all required tools
 ```
 casky-runner/
 ├── harness.py               Core investigation harness — entity extraction, adapter fan-out,
-│                             pipeline invocation, execution dispatch, local report server
+│                             pipeline invocation, execution dispatch, outcome capture, local report server
 ├── casky.sh                 The `casky` CLI wrapper (run/verify/harness/help)
-├── casky_pipeline/          Context adapters, 4-stage classifier, BYO-LLM provider layer
-│   ├── adapters/            ContextEngineAdapter interface + CveMcpAdapter + LocalPlaybookAdapter
+├── casky_pipeline/          Context adapters, 4-stage classifier, memory layer, BYO-LLM provider layer
+│   ├── adapters/            ContextEngineAdapter interface + CveMcpAdapter + LocalPlaybookAdapter +
+│   │                        LocalHistoryAdapter + MemoryAdapter
 │   ├── playbooks/            Starter investigation playbook library (YAML)
 │   ├── pipeline.py           TechniqueValidator → SkillSelector → (StepOrderer ∥ EvidenceGap)
+│   ├── memory.py             Memory extraction, decay math, dual-mode (Postgres/JSON-file) storage
 │   ├── llm_providers.py      AnthropicProvider / OpenAICompatibleProvider / build_provider_from_env()
 │   └── tests/                 pytest suite — run via `make pytest`
+├── casky_db/                 Postgres persistence layer — investigations, outcomes, feedback, memories
+│   ├── store.py               Plain-SQL repository functions (psycopg3, no ORM)
+│   └── migrations/            Numbered SQL files, applied by `casky db migrate`
 ├── docker-compose.yml        Full local stack: runner, skills library, Postgres, lab targets
 ├── docker/                   Dockerfiles for skill/target/MCP containers
 ├── skills/                   Per-skill tool manifests (used by `casky verify`)
@@ -338,9 +372,12 @@ Being upfront about where this stands, not glossing over gaps:
 - Prompt caching (for deployments using Anthropic) benefits some pipeline stages more than others —
   it's on by default for the classifier pipeline here, but a genuinely one-off system prompt would
   need to opt out explicitly via `cacheable_system=False`.
-- Local investigation memory (learning from your own past investigations over time, not just the
-  static starter playbooks) isn't built yet — the current pipeline doesn't carry context forward
-  between separate runs.
+- Organizational memory retrieval is entity-overlap, not semantic/vector search — a memory only
+  surfaces if the new evidence shares an actual CVE ID, technique ID, IP, or hostname with what the
+  memory is scoped to. No embedding column exists yet; a vector-search upgrade is a documented,
+  deferred v2 (see `casky_pipeline/memory.py`'s module docstring), not something silently half-built.
+- Outcome capture is an interactive CLI prompt at the end of `casky harness` — there's no
+  `casky history` command yet to review or edit past outcomes/memories after the fact.
 - The classifier's internal `skill_category` grouping (`SUBDOMAIN_TO_CATEGORY` in `harness.py`) is
   coarser than the 18 real skill-image categories — e.g. `active-directory` evidence gets labeled
   under `identity` rather than its own category. This only affects plan-step labeling, not which
