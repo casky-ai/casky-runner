@@ -18,15 +18,21 @@ BOLD='\033[1m'
 RESET='\033[0m'
 
 section() { echo -e "\n${CYAN}${BOLD}--- $* ---${RESET}"; }
-pass()    { echo -e "  ${GREEN}PASS${RESET}: $*"; ((PASS++)); }
-fail()    { echo -e "  ${RED}FAIL${RESET}: $*"; ((FAIL++)); }
+pass()    { echo -e "  ${GREEN}PASS${RESET}: $*"; PASS=$((PASS + 1)); }
+fail()    { echo -e "  ${RED}FAIL${RESET}: $*"; FAIL=$((FAIL + 1)); }
 
 # ── test helpers ──────────────────────────────────────────────────────────────
 
 # Run a command inside the runner; mount fixtures over /etc/casky/skills so
 # both .tools and .md test fixtures are visible to casky.
+#
+# -i is required: without it, `docker run` never forwards piped stdin to the
+# container at all — any test piping a prompt in (`echo "..." | runner casky
+# run ...`) would silently get empty stdin no matter what was piped, which is
+# indistinguishable from the "empty prompt" failure path. Confirmed directly:
+# `echo x | docker run --rm IMAGE cat` prints nothing; with -i it prints "x".
 runner() {
-  docker run --rm \
+  docker run --rm -i \
     -e SKILL_LAB_NAME="$MOCK_LAB" \
     -v /var/run/docker.sock:/var/run/docker.sock \
     -v "${FIXTURES}:/etc/casky/skills:ro" \
@@ -42,7 +48,7 @@ runner_env() {
     shift
   done
   shift  # consume "--"
-  docker run --rm \
+  docker run --rm -i \
     -e SKILL_LAB_NAME="$MOCK_LAB" \
     -v /var/run/docker.sock:/var/run/docker.sock \
     -v "${FIXTURES}:/etc/casky/skills:ro" \

@@ -1,0 +1,45 @@
+id: active-directory-kerberoasting
+name: Active Directory Kerberoasting Investigation
+domain: active-directory
+mitre_techniques:
+  - T1558.003
+  - T1558.004
+description: >
+  Investigates suspected Kerberos ticket abuse for credential access —
+  Kerberoasting against service accounts with weak passwords and AS-REP
+  Roasting against accounts with Kerberos pre-authentication disabled.
+steps:
+  - skill_slug: bloodhound-spn-graph-pull
+    skill_category: active-directory
+    technique_id: T1558.003
+    technique_name: Kerberoasting
+    rationale: Mapping which accounts hold Service Principal Names and their
+      privilege level shows the actor's likely targets and whether the
+      implicated account is a high-value escalation path.
+    evidence_focus: SPN-registered accounts, group membership of SPN accounts,
+      accounts with old/never-rotated passwords
+    step_order: 1
+  - skill_slug: tgs-request-rate-anomaly-detection
+    skill_category: active-directory
+    technique_id: T1558.003
+    technique_name: Kerberoasting
+    rationale: A burst of TGS requests (event 4769) for multiple SPNs from a
+      single principal in a short window is the primary detection signal for
+      Kerberoasting, as opposed to normal service ticket request volume.
+    evidence_focus: Event 4769 volume/timing per requesting account, RC4
+      (etype 0x17) ticket encryption downgrade requests
+    step_order: 2
+  - skill_slug: weak-service-account-password-audit
+    skill_category: active-directory
+    technique_id: T1558.004
+    technique_name: AS-REP Roasting
+    rationale: Accounts with Kerberos pre-authentication disabled are directly
+      AS-REP roastable without any prior authentication; identifying and
+      auditing password strength on these accounts scopes real exposure.
+    evidence_focus: Accounts with "Do not require Kerberos preauthentication"
+      set, event 4768 requests without pre-auth, offline crack feasibility
+      of recovered hashes
+    step_order: 3
+evidence_gaps:
+  - Password complexity/rotation policy for service accounts was not available for review
+  - Unclear whether recovered ticket hashes were successfully cracked offline

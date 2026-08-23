@@ -1,0 +1,141 @@
+name: Release
+
+# Cuts a versioned, downloadable release: builds + Trivy-scans + pushes BOTH
+# Box images (casky-runner, casky-ui) under a pinnable tag AND :latest, then
+# publishes a GitHub Release linking them. Mirrors build.yml's existing
+# build → Trivy-gate → push pattern (already proven for casky-runner on every
+# push to main) rather than inventing a new one, extended to cover casky-ui
+# (which build.yml doesn't touch) and to produce a real version, not just a
+# rolling :latest.
+#
+# Deliberately NOT wired to fire automatically on every push to main — a
+# release is a real "someone can now `docker pull` a numbered version of
+# this" moment, so it only runs when a maintainer explicitly cuts one, via
+# either path below.
+#
+# Trigger:
+#   - push a tag matching v*.*.* (e.g. `git tag v0.1.0 && git push origin v0.1.0`)
+#   - OR run manually from the Actions tab (workflow_dispatch) with a tag input,
+#     for a re-release/hotfix without needing a fresh git tag first
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Version to release (e.g. v0.1.0) — must already exist as a git tag'
+        required: true
+
+permissions:
+  contents: write    # to create the GitHub Release
+  packages: write    # to push to GHCR
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - component: runner
+            context: .
+            dockerfile: Dockerfile
+            image: ghcr.io/casky-ai/box/runner
+          - component: ui
+            context: ./casky-ui
+            dockerfile: casky-ui/Dockerfile
+            image: ghcr.io/casky-ai/box/ui
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref_name }}
+
+      - name: Resolve version
+        id: version
+        run: |
+          VERSION="${{ github.event.inputs.tag || github.ref_name }}"
+          if [[ ! "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Version must look like v0.1.0 (got: $VERSION)" >&2
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Load locally first (not push:true directly) so Trivy scans the exact
+      # image about to ship — same reasoning as build.yml's own comment.
+      - name: Build (load locally)
+        uses: docker/build-push-action@v5
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          load: true
+          push: false
+          tags: casky-${{ matrix.component }}:release-candidate
+          cache-from: type=gha,scope=${{ matrix.component }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.component }}
+
+      - name: Trivy scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: casky-${{ matrix.component }}:release-candidate
+          severity: HIGH,CRITICAL
+          exit-code: 1
+          trivyignores: .trivyignore
+        env:
+          TRIVY_DISABLE_VEX_NOTICE: "true"
+
+      # Only reached on a clean scan — tag with both the pinned version and
+      # :latest, push both. :latest always tracks the most recent release,
+      # never an unreleased main-branch build (build.yml's :latest is the
+      # separate "freshest main" convenience — this one means "freshest
+      # numbered release").
+      - name: Push to GHCR
+        run: |
+          docker tag casky-${{ matrix.component }}:release-candidate \
+            ${{ matrix.image }}:${{ steps.version.outputs.version }}
+          docker tag casky-${{ matrix.component }}:release-candidate \
+            ${{ matrix.image }}:latest
+          docker push ${{ matrix.image }}:${{ steps.version.outputs.version }}
+          docker push ${{ matrix.image }}:latest
+
+  publish-release:
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref_name }}
+          fetch-depth: 0
+
+      - name: Resolve version
+        id: version
+        run: |
+          VERSION="${{ github.event.inputs.tag || github.ref_name }}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.version }}
+          generate_release_notes: true
+          body: |
+            ## Casky Box ${{ steps.version.outputs.version }}
+
+            ```
+            docker pull ghcr.io/casky-ai/box/runner:${{ steps.version.outputs.version }}
+            docker pull ghcr.io/casky-ai/box/ui:${{ steps.version.outputs.version }}
+            ```
+
+            Or point `docker-compose.yml` at these tags instead of building
+            locally — see `README.md`'s Quickstart for the full setup
+            (`.env`, `docker compose up -d`).

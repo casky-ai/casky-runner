@@ -28,8 +28,8 @@ ENV_FILE="${REPO_ROOT}/.env.local"
 # ── colour helpers ─────────────────────────────────────────────────────────────
 GREEN='\033[0;32m'; RED='\033[0;31m'; CYAN='\033[0;36m'; BOLD='\033[1m'; RESET='\033[0m'
 section() { echo -e "\n${CYAN}${BOLD}--- $* ---${RESET}"; }
-pass()    { echo -e "  ${GREEN}PASS${RESET}: $*"; ((PASS++)); }
-fail()    { echo -e "  ${RED}FAIL${RESET}: $*"; ((FAIL++)); }
+pass()    { echo -e "  ${GREEN}PASS${RESET}: $*"; PASS=$((PASS + 1)); }
+fail()    { echo -e "  ${RED}FAIL${RESET}: $*"; FAIL=$((FAIL + 1)); }
 PASS=0; FAIL=0
 
 # ── pre-flight ────────────────────────────────────────────────────────────────
@@ -96,7 +96,21 @@ else
   fi
 fi
 
-if $COMPOSE ps | grep -q "casky-db"; then
+# `docker compose ps` can lag the daemon's actual state by a second or two
+# right after `up --wait` returns (observed: db already Running/Healthy per
+# `docker inspect`, but the very next `compose ps` call still misses it) —
+# retry briefly instead of failing on a single snapshot. `docker inspect`
+# talks to the daemon directly rather than through compose's own state cache,
+# so it's the more reliable check here.
+DB_UP=false
+for _ in 1 2 3 4 5; do
+  if docker inspect casky-db --format '{{.State.Running}}' 2>/dev/null | grep -q true; then
+    DB_UP=true
+    break
+  fi
+  sleep 1
+done
+if $DB_UP; then
   pass "casky-db container is up"
 else
   fail "casky-db container did not start"

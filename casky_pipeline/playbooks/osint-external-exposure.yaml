@@ -1,0 +1,45 @@
+id: osint-external-exposure
+name: External Exposure OSINT Investigation
+domain: osint
+mitre_techniques:
+  - T1596
+  - T1590
+description: >
+  Open-source investigation of an organization's external attack surface —
+  what an actor could learn or find pre-compromise via public technical
+  databases, network reconnaissance sources, and misconfigured public
+  cloud storage.
+steps:
+  - skill_slug: subdomain-cert-transparency-enumeration
+    skill_category: osint
+    technique_id: T1596
+    technique_name: Search Open Technical Databases
+    rationale: Enumerating subdomains via certificate transparency logs and
+      passive DNS shows the full externally-discoverable attack surface an
+      actor would have seen before targeting the organization.
+    evidence_focus: Certificate transparency log entries, passive DNS
+      subdomain records, exposed staging/dev subdomains
+    step_order: 1
+  - skill_slug: exposed-credential-breach-corpus-search
+    skill_category: open-source-intelligence
+    technique_id: T1590
+    technique_name: Gather Victim Network Information
+    rationale: Employee credentials or infrastructure details leaked in prior
+      breach corpora are commonly the actual starting point for an intrusion;
+      checking exposure scopes this risk directly.
+    evidence_focus: Employee email/credential hits in breach corpora,
+      leaked internal hostnames or IP ranges in paste sites
+    step_order: 2
+  - skill_slug: cloud-storage-bucket-exposure-check
+    skill_category: osint
+    technique_id: T1596
+    technique_name: Search Open Technical Databases
+    rationale: Misconfigured public cloud storage buckets are a frequent,
+      easily-discoverable source of sensitive data exposure and should be
+      checked against known naming conventions for the organization.
+    evidence_focus: Publicly readable/listable S3/GCS/Azure Blob buckets,
+      bucket contents sensitivity, bucket policy misconfigurations
+    step_order: 3
+evidence_gaps:
+  - Full list of the organization's cloud account IDs was not available to scope bucket enumeration
+  - Breach corpus coverage may not include the most recent leaks

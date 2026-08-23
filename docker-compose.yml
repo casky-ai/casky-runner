@@ -23,7 +23,12 @@ services:
     image: casky-runner:latest
     container_name: casky-runner
     restart: unless-stopped
-    user: root
+    # No `user: root` override — entrypoint.sh now detects the mounted
+    # docker.sock's actual GID at runtime and grants the non-root 'casky' user
+    # access to it, then drops to 'casky' before running anything else. This
+    # used to require forcing the whole container to run as root, which
+    # defeated the non-root design point-blank for the primary documented
+    # `docker compose up` path. See entrypoint.sh for the actual fix.
     depends_on:
       casky-skills:
         condition: service_completed_successfully
@@ -35,11 +40,22 @@ services:
       # Platform sync — set CASKY_API_KEY to enable platform mode in the harness.
       # Leave empty to run in local mode (findings stored in /var/casky/reports/).
       CASKY_API_KEY: ${CASKY_API_KEY:-}
-      CASKY_APP_URL: ${CASKY_APP_URL:-https://app.casky.ai}
+      CASKY_APP_URL: ${CASKY_APP_URL:-https://casky.ai}
       CASKY_LOCAL_PORT: ${CASKY_LOCAL_PORT:-8765}
+      # Postgres persistence layer (casky_db/) — optional. Defaults to the
+      # bundled `db` service below; leave empty to keep the pre-Postgres
+      # JSON-file fallback (plans_dir / /var/casky/reports/), or point this
+      # at an external Postgres instead.
+      DATABASE_URL: ${DATABASE_URL:-postgresql://casky:${DB_PASSWORD:-casky}@db:5432/casky}
       # Legacy single-run env vars — still work for: casky run <skill>
       CASKY_RUN_ID: ${CASKY_RUN_ID:-}
       CASKY_TOKEN: ${CASKY_TOKEN:-}
+      # BYO-LLM for the classifier pipeline (casky harness) — defaults to Anthropic
+      # direct via ANTHROPIC_API_KEY above. See .env.example for the full explanation.
+      CASKY_MODEL_PROVIDER: ${CASKY_MODEL_PROVIDER:-anthropic}
+      CASKY_MODEL_BASE_URL: ${CASKY_MODEL_BASE_URL:-}
+      CASKY_MODEL_NAME: ${CASKY_MODEL_NAME:-}
+      CASKY_MODEL_API_KEY: ${CASKY_MODEL_API_KEY:-}
       SKILL_LAB_NAME: ${SKILL_LAB_NAME:-skill-lab}
       SKILLS_LIBRARY_PATH: ${SKILLS_LIBRARY_PATH:-/opt/skills-library}
       # CVE MCP Server API keys — inherited by the cve_mcp.server subprocess.
@@ -59,6 +75,10 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - casky-reports:/var/casky/reports    # persist findings between runs
       - casky-skills-data:/opt/skills-library:ro   # skills library (read-only)
+      # Drop evidence files (CloudTrail exports, pcap-derived text, etc.) here on
+      # the host and they show up at the same path in the container — no 'docker
+      # cp' needed. Use with 'casky harness -i /var/casky/evidence/<file>'.
+      - ./evidence:/var/casky/evidence:ro
     networks:
       - casky-internal
     healthcheck:
@@ -87,26 +107,119 @@ services:
       timeout: 5s
       retries: 5
 
+  # ── Self-hosted UI ─────────────────────────────────────────────────────────
+  # Browse investigations/findings/remediation/reports out of the same
+  # Postgres schema the harness writes to (casky_db/). Binds 127.0.0.1-only
+  # by default — set CASKY_UI_HOST=0.0.0.0 to expose it beyond localhost
+  # (there's no RBAC, only a single admin login — think before doing that on
+  # anything but a trusted host). Requires the `db` service; there's no
+  # JSON-file fallback here the way harness.py has one.
+  ui:
+    build:
+      context: ./casky-ui
+      dockerfile: Dockerfile
+    image: casky-ui:latest
+    container_name: casky-ui
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      # NOT a dependency on `runner` being healthy: runner also pulls in the
+      # multi-GB skills-library image via `casky-skills` first, which has
+      # nothing to do with browsing already-stored investigations. Instead,
+      # casky-ui applies casky_db/migrations/*.sql itself on boot (see
+      # lib/migrate.ts, run from instrumentation.ts) — the same idempotent
+      # SQL files runner's entrypoint.sh applies, copied into this image at
+      # build time (see Dockerfile) rather than duplicated. Two independent,
+      # idempotent appliers of one shared source of truth — not a fork.
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql://casky:${DB_PASSWORD:-casky}@db:5432/casky}
+      # Leave blank to auto-generate a password on first boot — printed once
+      # to `docker compose logs ui` and persisted (hashed) so it survives a
+      # restart. Set it to rotate the password on the next restart.
+      CASKY_UI_ADMIN_PASSWORD: ${CASKY_UI_ADMIN_PASSWORD:-}
+    ports:
+      - "${CASKY_UI_HOST:-127.0.0.1}:${CASKY_UI_PORT:-8766}:3000"
+    networks:
+      - casky-internal
+
   # ── Lab profile — only starts with: docker compose --profile lab up ──────────
 
   # Skill container: security tools pre-installed (nmap, nuclei, ZAP, ScoutSuite, etc.)
   # Override with custom image or build from Dockerfile
+  #
+  # SKILL_IMAGE picks which of the 18 real, published skill-images (see
+  # docker/skill-lab/Dockerfile) this builds from — defaults to web-app. Set it
+  # in .env (or on the command line) to match whichever lab-<target> profile
+  # you're starting, then rebuild: e.g.
+  #   SKILL_IMAGE=ghcr.io/casky-ai/skills/network:latest \
+  #     docker compose --profile lab-pcap-server up -d --build
+  # See README.md's target/category pairing table, or just use
+  # `make lab TARGET=<name>`, which sets this automatically.
   skill-lab:
-    profiles: [lab, lab-dvwa, lab-juice-shop, lab-custom]
+    profiles:
+      - lab
+      - lab-dvwa
+      - lab-juice-shop
+      - lab-custom
+      - lab-vulnstack
+      - lab-metasploitable
+      - lab-vulnservices
+      - lab-linux-pivot
+      - lab-minidc
+      - lab-pcap-server
+      - lab-localstack
+      - lab-vulncode
+      - lab-evidence-pack
+      - lab-sample-pack
     build:
       context: .
       dockerfile: docker/skill-lab/Dockerfile
+      args:
+        SKILL_IMAGE: ${SKILL_IMAGE:-ghcr.io/casky-ai/skills/web-app:latest}
     image: casky-skill-lab:latest
     container_name: skill-lab
     restart: unless-stopped
     command: sleep infinity
     volumes:
       - casky-skills-data:/opt/skills-library:ro   # skills library (read-only) for agent.py scripts
+    # casky-lab ONLY — casky-internal used to also be attached here ("reach runner's report
+    # server on localhost"), but nothing actually does that: report submission
+    # (casky.sh's REPORT_SECTION curl) runs from the agent's own shell inside casky-runner,
+    # not via `docker exec skill-lab curl ...`, and nothing in skill-lab's Dockerfile or the
+    # skills library calls out to casky-internal either (confirmed via repo-wide grep). That
+    # membership silently defeated this container's own "no internet access" guarantee below
+    # — Docker doesn't restrict egress per-network on a multi-homed container, so having ANY
+    # attached network with a real gateway (casky-internal is a plain, non-internal bridge)
+    # gave skill-lab real internet access despite casky-lab's `internal: true`. Removed.
     networks:
-      - casky-lab       # Isolated from internet for security scanning
-      - casky-internal  # Can reach runner's report server on localhost
+      - casky-lab       # Isolated from internet for security scanning (internal: true, below)
     # No internet access for the skill container — it scans the target only
     dns: []
+
+  # ── Live-target skill container (real, authorized targets only) ─────────────
+  # Same image/tools as skill-lab (same Dockerfile, same SKILL_IMAGE build arg) but
+  # wired for real network reachability instead of isolation — no casky-lab network,
+  # no dns: [] override. Started via `make live` (see README's "Live, authorized
+  # real-target investigations" section and SECURITY.md), never by `make lab`.
+  # `casky run --live-target ... --i-have-authorization` is the only supported way
+  # to point tools at it — see casky.sh.
+  skill-live:
+    profiles:
+      - live
+    build:
+      context: .
+      dockerfile: docker/skill-lab/Dockerfile
+      args:
+        SKILL_IMAGE: ${SKILL_IMAGE:-ghcr.io/casky-ai/skills/web-app:latest}
+    image: casky-skill-live:latest
+    container_name: skill-live
+    restart: unless-stopped
+    command: sleep infinity
+    volumes:
+      - casky-skills-data:/opt/skills-library:ro   # skills library (read-only) for agent.py scripts
+    networks:
+      - casky-internal   # Real internet/DNS egress — deliberate, this is the live-target container
 
   # ── CVE MCP Server (Phase 2: CVE Enrichment — Optional) ─────────────────────
   # NOTE: cve_mcp module not yet implemented. This service will be added in a
@@ -138,7 +251,9 @@ services:
       target-db:
         condition: service_healthy
     networks:
-      - casky-lab
+      casky-lab:
+        aliases:
+          - target   # stable hostname skill-lab/README scripts use, regardless of which target profile is active
     dns: []
 
   # OWASP Juice Shop (self-contained, no database)
@@ -150,7 +265,9 @@ services:
     environment:
       NODE_ENV: production
     networks:
-      - casky-lab
+      casky-lab:
+        aliases:
+          - target
     dns: []
 
   # Custom target (user-provided image via TARGET_IMAGE env var)
@@ -160,7 +277,127 @@ services:
     container_name: casky-target
     restart: unless-stopped
     networks:
-      - casky-lab
+      casky-lab:
+        aliases:
+          - target
+    dns: []
+
+  # ── The remaining published skill-targets (ghcr.io/casky-ai/targets/<name>) ─
+  # All public, single-container, no extra services needed (unlike DVWA's MySQL
+  # dependency) — confirmed live against github.com/casky-ai/skill-targets'
+  # own documented pattern. Pair each with its matching SKILL_IMAGE — see the
+  # table in README.md, or use `make lab TARGET=<name>`.
+
+  target-vulnstack:            # SKILL_IMAGE=.../skills/vuln-scan
+    profiles: [lab-vulnstack]
+    image: ghcr.io/casky-ai/targets/vulnstack:latest
+    container_name: casky-target
+    restart: unless-stopped
+    networks:
+      casky-lab:
+        aliases:
+          - target
+    dns: []
+
+  target-metasploitable:       # SKILL_IMAGE=.../skills/exploitation
+    profiles: [lab-metasploitable]
+    image: ghcr.io/casky-ai/targets/metasploitable:latest
+    container_name: casky-target
+    restart: unless-stopped
+    networks:
+      casky-lab:
+        aliases:
+          - target
+    dns: []
+
+  target-vulnservices:         # SKILL_IMAGE=.../skills/exploitation
+    profiles: [lab-vulnservices]
+    image: ghcr.io/casky-ai/targets/vulnservices:latest
+    container_name: casky-target
+    restart: unless-stopped
+    networks:
+      casky-lab:
+        aliases:
+          - target
+    dns: []
+
+  target-linux-pivot:          # SKILL_IMAGE=.../skills/post-exploit
+    profiles: [lab-linux-pivot]
+    image: ghcr.io/casky-ai/targets/linux-pivot:latest
+    container_name: casky-target
+    restart: unless-stopped
+    networks:
+      casky-lab:
+        aliases:
+          - target
+    dns: []
+
+  target-minidc:                # SKILL_IMAGE=.../skills/active-directory
+    profiles: [lab-minidc]
+    image: ghcr.io/casky-ai/targets/minidc:latest
+    container_name: casky-target
+    restart: unless-stopped
+    networks:
+      casky-lab:
+        aliases:
+          - target
+    dns: []
+
+  target-pcap-server:           # SKILL_IMAGE=.../skills/network
+    profiles: [lab-pcap-server]
+    image: ghcr.io/casky-ai/targets/pcap-server:latest
+    container_name: casky-target
+    restart: unless-stopped
+    networks:
+      casky-lab:
+        aliases:
+          - target
+    dns: []
+
+  target-localstack:            # SKILL_IMAGE=.../skills/cloud
+    profiles: [lab-localstack]
+    image: ghcr.io/casky-ai/targets/localstack:latest
+    container_name: casky-target
+    restart: unless-stopped
+    networks:
+      casky-lab:
+        aliases:
+          - target
+    dns: []
+
+  target-vulncode:               # SKILL_IMAGE=.../skills/appsec
+    profiles: [lab-vulncode]
+    image: ghcr.io/casky-ai/targets/vulncode:latest
+    container_name: casky-target
+    restart: unless-stopped
+    networks:
+      casky-lab:
+        aliases:
+          - target
+    dns: []
+
+  # PRIVATE on GHCR (forensics/malware content — deliberately gated, not a bug).
+  # docker login ghcr.io with org access before pulling either of these two.
+  target-evidence-pack:          # SKILL_IMAGE=.../skills/forensics
+    profiles: [lab-evidence-pack]
+    image: ghcr.io/casky-ai/targets/evidence-pack:latest
+    container_name: casky-target
+    restart: unless-stopped
+    networks:
+      casky-lab:
+        aliases:
+          - target
+    dns: []
+
+  target-sample-pack:            # SKILL_IMAGE=.../skills/malware
+    profiles: [lab-sample-pack]
+    image: ghcr.io/casky-ai/targets/sample-pack:latest
+    container_name: casky-target
+    restart: unless-stopped
+    networks:
+      casky-lab:
+        aliases:
+          - target
     dns: []
 
   # MySQL database for DVWA (only starts with lab-dvwa profile)

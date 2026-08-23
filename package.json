@@ -2,8 +2,10 @@
   "name": "casky-runner-tools",
   "version": "1.0.0",
   "private": true,
+  "license": "Apache-2.0",
   "dependencies": {
     "@anthropic-ai/claude-code": "latest",
-    "@google/gemini-cli": "latest"
+    "@google/gemini-cli": "latest",
+    "@github/copilot": "latest"
   }
 }

@@ -1,0 +1,46 @@
+id: incident-response-initial-access
+name: Initial Access Vector Investigation
+domain: incident-response
+mitre_techniques:
+  - T1566.001
+  - T1078
+  - T1133
+description: >
+  Investigates how an actor first gained a foothold in the environment,
+  covering phishing with malicious attachments, valid-account abuse, and
+  exposed external remote services (VPN/RDP gateways) as the three most
+  common initial access vectors.
+steps:
+  - skill_slug: mail-gateway-attachment-triage
+    skill_category: incident-response
+    technique_id: T1566.001
+    technique_name: "Phishing: Spearphishing Attachment"
+    rationale: Evidence points to a user-reported or gateway-flagged email
+      around the incident window; triaging the attachment and delivery path
+      confirms whether phishing was the initial access vector.
+    evidence_focus: Mail gateway delivery/detonation logs, attachment hash and
+      macro/exploit content, recipient click/open telemetry
+    step_order: 1
+  - skill_slug: impossible-travel-login-geo-check
+    skill_category: incident-response
+    technique_id: T1078
+    technique_name: Valid Accounts
+    rationale: A valid but stolen account used from an unexpected location is
+      a common alternative initial access path; comparing first-seen login
+      geography/ASN against the user's baseline surfaces this.
+    evidence_focus: Sign-in logs with geo/ASN, impossible-travel flags, MFA
+      challenge/bypass results around the incident window
+    step_order: 2
+  - skill_slug: vpn-rdp-gateway-exposure-review
+    skill_category: incident-response
+    technique_id: T1133
+    technique_name: External Remote Services
+    rationale: Internet-exposed VPN or RDP gateways without MFA are a
+      frequent initial access path; reviewing exposure and recent
+      authentication attempts against the gateway rules this in or out.
+    evidence_focus: Internet-facing VPN/RDP service inventory, brute-force or
+      credential-stuffing attempts, gateway authentication success events
+    step_order: 3
+evidence_gaps:
+  - Endpoint telemetry for the first 24 hours after suspected initial access is missing
+  - MFA enrollment status for the compromised account at the time of the incident is unconfirmed

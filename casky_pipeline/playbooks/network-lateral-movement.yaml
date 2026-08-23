@@ -1,0 +1,45 @@
+id: network-lateral-movement
+name: Network Lateral Movement Investigation
+domain: network
+mitre_techniques:
+  - T1021.001
+  - T1021.002
+  - T1570
+description: >
+  Investigates suspected lateral movement across internal network segments,
+  covering east-west traffic baselining, SMB admin-share abuse, RDP-based
+  pivoting, and tool transfer between compromised hosts.
+steps:
+  - skill_slug: netflow-east-west-baseline
+    skill_category: network-security
+    technique_id: T1570
+    technique_name: Lateral Tool Transfer
+    rationale: Evidence suggests a host communicated with internal peers it
+      does not normally talk to; a netflow baseline comparison highlights
+      new or high-volume east-west flows consistent with staged tool transfer.
+    evidence_focus: New internal flow pairs, unusual port/protocol
+      combinations, data volume spikes between host pairs
+    step_order: 1
+  - skill_slug: smb-admin-share-session-enumeration
+    skill_category: network-security
+    technique_id: T1021.002
+    technique_name: "Remote Services: SMB/Windows Admin Shares"
+    rationale: SMB (ADMIN$/C$) sessions from an already-implicated host are a
+      classic lateral movement signature and should be enumerated across the
+      affected time window.
+    evidence_focus: SMB session logon events (4624 type 3), ADMIN$/C$ share
+      access, PsExec-style service creation on remote hosts
+    step_order: 2
+  - skill_slug: rdp-auth-log-correlation
+    skill_category: network-security
+    technique_id: T1021.001
+    technique_name: "Remote Services: Remote Desktop Protocol"
+    rationale: Correlating RDP authentication events across hosts in the
+      suspected movement path confirms whether the actor pivoted via
+      interactive RDP sessions rather than only service-based access.
+    evidence_focus: RDP logon events (4624 type 10), source/destination host
+      pairs, session duration and off-hours timing anomalies
+    step_order: 3
+evidence_gaps:
+  - No packet capture available to confirm payload content of the east-west flows
+  - Endpoint logging on two hosts in the suspected path was disabled at the time of the incident

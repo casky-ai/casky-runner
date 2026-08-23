@@ -1,270 +1,293 @@
-# Casky Runner — Quick Start
+# Casky Box — Quick Start
 
-Run structured security investigations locally using the Casky Box (casky-runner v1.2).
+Run structured security investigations locally using Casky Box (`casky-runner`) — no account, no
+cloud dependency required. See [README.md](README.md) for the full architecture and BYO-Agent /
+BYO-LLM / BYO-DB configuration reference; this doc is a hands-on walkthrough.
 
-**What this does:**
-- Boots an isolated lab network with security tools (skill image) and a target application
-- Supports **interactive guided investigations** — Claude guides you through each skill step-by-step
-- **Phase 2: CVE enrichment pipeline** — 4-phase plan generation with entity extraction, CVE enrichment, and platform API integration
-- Receives investigation plans from the Casky platform (or runs local plans air-gapped)
-- Synthesizes findings into structured reports (MITRE, severity, remediation)
-- POSTs findings back to the platform dashboard (or saves locally)
-- **Auto-syncs upstream skills library** — daily check for new skills (06:30 UTC)
+**What this gives you:**
+- A local lab network with security tools (skill containers) and a target application to practice against
+- `casky harness` — evidence in, an ordered MITRE-mapped investigation plan out, via the 4-stage
+  classifier pipeline described in [README.md](README.md#how-a-plan-actually-gets-built)
+- `casky run <skill>` — interactive, human-in-the-loop investigation guided by your chosen coding agent
+- `casky run <skill> --live-target` — the same, but against a real, authorized target (a container,
+  URL, or API endpoint) instead of the practice lab — see Path C in step 6 below
+- Structured findings (severity, remediation, MITRE mapping), saved locally, synced to a platform
+  dashboard only if you opt in
 
-**Time to first investigation:** 5 minutes
+**Time to first investigation:** ~5 minutes if you already have Docker running.
 
 ---
 
 ## Prerequisites
 
 - Docker Desktop 4.x+ with at least 8 GB RAM allocated
-- `ANTHROPIC_API_KEY` (Claude Code API key)
-- Optional: `CASKY_TOKEN` (JWT from app.casky.ai workspace) for platform integration
+- An LLM provider for the classifier pipeline — `ANTHROPIC_API_KEY` by default (see README's
+  [BYO-LLM section](README.md#byo-llm--which-model-plans-the-investigation) for OpenAI/Qwen/Kimi/local alternatives)
+- Optional: a Casky platform account (`CASKY_API_KEY`, generated at [casky.ai](https://casky.ai)) if
+  you want plan sync / hosted dashboard on top of the local pipeline — not required for anything below
 
 ## 1. Clone and configure environment
 
 ```bash
-git clone https://github.com/casky-ai/casky-runner
+git clone https://github.com/casky-ai/casky-runner.git
 cd casky-runner
-cp .env.example .env.local
+cp .env.example .env
 ```
 
-**Edit `.env.local`** — required (open with your editor):
-```bash
-nano .env.local
-# OR
-vi .env.local
+**Edit `.env`** and set at minimum:
+```
+ANTHROPIC_API_KEY=sk-ant-...
 ```
 
-Add your API key:
+`docker compose` reads `.env` automatically — no `--env-file` flag needed for anything in this guide.
+(`.env.local` is a *separate* file used only by `tests/compose-test.sh`'s own test harness — don't
+confuse the two.)
+
+**Optional** — for platform sync (entirely additive, see README):
 ```
-ANTHROPIC_API_KEY=sk-ant-v3-YOUR_KEY_HERE
+CASKY_API_KEY=csk_...             # generate at casky.ai — this is what enables platform mode
+CASKY_APP_URL=https://casky.ai    # default, only needed if you're overriding it
 ```
 
-**Optional** — for platform integration:
-```
-CASKY_API_KEY=csk_...            # Casky platform API key (for platform mode)
-CASKY_APP_URL=https://app.casky.ai
-```
+## 2. Populate the skills library (one-time)
 
-**Note:** The runner container reads `ANTHROPIC_API_KEY` from the environment. Make sure it's set in `.env.local` before starting containers with `--env-file .env.local`.
+`casky-skills` is a thin packaging container ([docker/skills/Dockerfile](docker/skills/Dockerfile))
+that clones the upstream skills repo
+([mukul975/Anthropic-Cybersecurity-Skills](https://github.com/mukul975/Anthropic-Cybersecurity-Skills))
+verbatim and copies it into a shared volume other services mount read-only.
 
-## Phase 2: CVE Enrichment Pipeline (Automatic)
-
-When you generate a plan from evidence, the harness runs a **4-phase pipeline** to produce rich investigation plans:
-
-### Phase A: Entity Extraction
-Detects CVE IDs, MITRE technique IDs, IP addresses, and hostnames from raw evidence (pure regex, no API calls).
-
-### Phase B: CVE Enrichment
-- **Local (always):** MCP SDK calls the CVE server for CVSS, KEV status, technique mappings
-- **With CASKY_API_KEY:** Platform API also returns curated CVE spotlights and skill recommendations
-
-### Phase C: Context Assembly
-- **Local (always):** Searches ~/.casky/plans/ for similar past investigations (few-shot context)
-- **With CASKY_API_KEY:** Platform API returns matching investigation playbooks
-
-### Phase D: Haiku Classification
-Classifier combines all context (entities, CVE enrichment, similar plans, playbooks) to select 5-8 relevant skills. Returns confidence scores and evidence gaps.
-
-**Result:** Plans now include `cve_references`, `evidence_gaps`, and `confidence` fields — better decisions, faster investigations.
-
----
-
-## 2. Populate the skills library (one-time setup)
-
-Before starting the investigation, download the 754-skill security library:
+**If you're testing this repo before it's pushed/published** (no `ghcr.io/casky-ai/skills-library`
+image exists yet — that only gets built and published by this repo's own GitHub Actions workflow
+after it's pushed), build it locally instead of pulling:
 
 ```bash
-# Pull the latest skills library image
-docker compose pull casky-skills
-
-# Populate the shared volume (one-time, ~30 seconds)
+docker build -f docker/skills/Dockerfile -t ghcr.io/casky-ai/skills-library:latest .
 docker compose up casky-skills
 ```
 
-Expected output:
+**Once this repo is pushed and the image is published**, you can skip the local build and just pull:
+```bash
+docker compose pull casky-skills
+docker compose up casky-skills
 ```
-casky-skills  | Skills library ready: 754 skills
+
+Expected output either way (the exact count tracks upstream and will drift over time — 754 when
+this doc was first written, 817 as of the last local verification; don't worry if yours differs,
+just confirm it's a nonzero count and exit code 0):
+```
+casky-skills  | Skills library ready: N skills
 casky-skills exited with code 0
 ```
 
-Re-run these commands anytime you want to update the skills library to the latest version.
+`casky-skills` is a one-shot init container — it populates the shared volume, then exits 0. That
+exit is expected, not a failure. Re-run whichever of the two commands above anytime you want to
+refresh to the latest skill set.
 
 ## 3. Choose and start a target
 
-Pick one of three target options:
-
-### Option A: DVWA (Damn Vulnerable Web App) — Full multi-vulnerability investigation
-
-```bash
-docker compose --profile lab-dvwa --env-file .env.local up -d runner db skill-lab target-dvwa target-db
-```
-
-**Starts:**
-- **casky-runner** — Claude Code agent
-- **casky-mcp** — CVE MCP server
-- **skill-lab** — web-app tools (nmap, nuclei, sqlmap, etc.)
-- **casky-target** — DVWA vulnerable app
-- **casky-target-db** — MySQL database (auto-initialized)
-
-**Best for:** Web application security (SQL injection, XSS, CSRF, auth bypass)
-
-### Option B: OWASP Juice Shop — Self-contained, no database setup
+The easiest way — this also builds `skill-lab` with the *matching* tool image, not whatever it was
+built with last:
 
 ```bash
-docker compose --profile lab-juice-shop --env-file .env.local up -d runner db skill-lab target-juice-shop
+make lab TARGET=dvwa
 ```
 
-**Starts:**
-- Same services as Option A, but with Juice Shop (Node.js) instead of DVWA
-- No database to configure; faster to start
+`TARGET` is any of: `dvwa`, `juice-shop`, `vulnstack`, `metasploitable`, `vulnservices`,
+`linux-pivot`, `minidc`, `pcap-server`, `localstack`, `vulncode`, `evidence-pack`, `sample-pack`,
+`custom`. Each pairs with a specific skill category (`casky run <category>` must match — `make lab`
+prints which `SKILL_IMAGE` it used so you know) — see the full table in
+[README.md](README.md#two-ways-to-investigate--and-where-the-lab-targets-fit-in).
 
-**Best for:** Web app security + ecommerce vulnerabilities
+**Starts:** `casky-runner`, `db` (local Postgres), `skill-lab` (built from the matching
+`ghcr.io/casky-ai/skills/<category>:latest`), the target container (`casky-target`) — plus
+`target-db` (MySQL) if you picked `dvwa`, the only target with a database dependency.
 
-### Option C: Custom target — Bring your own container
+**Only one target runs at a time** — they all share the stable hostname `target`. Switching means
+tearing down the old one first:
+```bash
+docker compose --profile lab-<old-target> down
+# or, if you hit "name already in use":
+docker rm -f casky-target skill-lab
+```
+
+**`sample-pack` is private on GHCR** (real malware samples, deliberately gated) — `docker login
+ghcr.io` with org access before pulling it. Every other target is public.
+
+**Custom target — bring your own container:**
 
 ```bash
 export TARGET_IMAGE=your-custom:latest
-docker compose --profile lab-custom --env-file .env.local up -d runner db skill-lab target-custom
+make lab TARGET=custom   # defaults SKILL_IMAGE to web-app; override it yourself if you need
+                          # different tools, e.g. SKILL_IMAGE=ghcr.io/casky-ai/skills/cloud:latest
 ```
 
-**Requirements:**
-- Container must listen on port 80 or 8080
-- Connected to `casky-lab` Docker network
-- Document the application's vulnerabilities in a README
+Your image needs to listen on port 80 and join the `casky-lab` network — `docker-compose.yml` wires
+this up automatically once `TARGET_IMAGE` is set.
 
-**Best for:** Testing against your own applications or third-party targets
+Without `make lab`, the equivalent is `SKILL_IMAGE=ghcr.io/casky-ai/skills/<category>:latest
+docker compose --profile lab-<target> up -d --build`.
 
-## 3. Verify tools are ready
+## 4. Verify everything is actually up
 
 ```bash
 docker exec casky-runner casky verify web-app
 ```
 
-Expected output:
+Expected:
 ```
-✓ nmap
-✓ nuclei
-✓ ffuf
-...
-PASS: all 12 tools present in skill-lab (web-app)
+  ✓ nmap
+  ✓ nuclei
+  ...
+PASS: all N tools present in skill-lab (web-app)
 ```
 
-If tools are missing, the skill image may still be pulling. Wait 30s and retry.
-
-Also verify the target is responding:
+And confirm the target itself is reachable — every target profile gets a stable `target` network
+alias regardless of which one is active:
 
 ```bash
 docker exec skill-lab curl -s -I http://target/ | head -3
 ```
 
-Should see `HTTP/1.1 200` or `302 Found`.
+Expect `HTTP/1.1 200` or `302 Found`. If tools are still missing, the skill image may still be
+pulling — wait ~30s and retry `casky verify`.
 
-## 4. Browse the skills library
+And confirm Casky UI is up (no extra flag needed — it's part of the default `docker compose up`):
 
-You can explore available skills before starting an investigation:
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8766/login
+```
+
+Expect `200`. See step 7 below for first login.
+
+## 5. Browse the skills library
 
 ```bash
 # List all skills
 docker exec casky-runner casky skills list
 
-# List skills in a specific domain (e.g., cloud-security)
+# List skills in a specific subdomain (real example — this one has 60+ matches)
 docker exec casky-runner casky skills list cloud-security
 
-# View the full documentation for a skill
+# View full documentation for one skill
 docker exec casky-runner casky skills show detecting-aws-cloudtrail-anomalies
 ```
 
-## 5. Interactive guided investigation workflow
+If a subdomain filter ever returns nothing, `casky skills list <subdomain>` will now tell you
+explicitly and list the real available subdomains — it won't just go silent.
 
-This is a **human-in-the-loop** investigation where Claude guides you step-by-step through each skill.
+## 6. Run an investigation
 
-### Step 1: Evidence gathering
+### Path A — automatic: evidence in, plan out (`casky harness`)
 
-Gather preliminary reconnaissance on your target:
+This is the primary, recommended path — it's what runs the actual classifier pipeline
+(entity extraction → context adapters → 4-stage classification) described in the README.
 
 ```bash
-# Example: Web app reconnaissance
-docker exec skill-lab bash -c '
-echo "=== HTTP Headers ==="
-curl -s -I http://target/ | head -5
-
-echo "=== Server Detection ==="
-curl -s http://target/ | head -20
-'
+docker exec -it casky-runner casky harness
 ```
 
-Or upload/paste evidence from logs, exports, or SIEM systems.
+Choose `g` (generate new plan), paste your evidence — a CloudTrail event, a suspicious log line,
+anything — then **type `END` alone on a new line and press Enter** to submit (Ctrl+D also works, but
+`END` sidesteps a real terminal quirk: Ctrl+D only signals true end-of-input on an *empty* line, so
+pasted text without a trailing newline can need a second Ctrl+D press). You'll see live progress as
+each pipeline stage runs, then an ordered plan with rationale per step — nothing executes until you
+review it.
 
-### Step 2: Skill identification & interactive execution
+**From a file instead of pasting** — drop the evidence file in `./evidence/` on the host (bind-mounted
+read-only into the container at `/var/casky/evidence`, no `docker cp` needed) and pass `-i`:
 
-Start Claude as your investigation guide:
+```bash
+cp your-cloudtrail-export.json evidence/
+docker exec -it casky-runner casky harness -i /var/casky/evidence/your-cloudtrail-export.json
+```
+
+This skips the Plan Source menu and paste prompt entirely and generates the plan directly from the
+file's contents. `casky harness` doesn't accept literal `.pcap` files — for packet captures, run
+`tshark -r yourfile.pcap -nn` (or `tcpdump -r yourfile.pcap -nn`) first and save the *text output* to
+`evidence/` instead. `evidence/` is gitignored (except its own README) — evidence can contain real
+investigation data and must never be committed.
+
+### Path B — interactive: guided step-by-step with your coding agent (`casky run`)
+
+For a more conversational flow where your agent proposes one command at a time and you paste results
+back:
 
 ```bash
 docker exec -it casky-runner casky run web-app
 ```
 
-Paste this prompt (or your own evidence + task):
+Paste a task prompt (same `END`-to-submit rule applies), for example:
 
 ```
 # Interactive Web Application Security Investigation
 
 ## My Evidence
-[Paste your reconnaissance output or raw logs here]
+[Paste your reconnaissance output or raw logs here — or leave blank to start from zero-knowledge recon]
 
 ## Task
-Based on this evidence, guide me through a structured investigation:
-
-1. **Identify applicable skills** — which security assessment techniques apply?
-2. **For each skill, provide guidance:**
-   - What the skill tests for (MITRE techniques, vulnerability classes)
-   - Exact command(s) to run in the skill container
-   - What to look for in the output
-3. **Sequential execution** — one skill at a time
-   - I'll run the command you suggest
-   - Paste the output back
-   - You analyze and move to the next skill
-4. **After all skills:**
-   - Synthesize findings into a structured report
-   - Map to MITRE ATT&CK
-   - Provide severity ratings + remediation
+Guide me through a structured investigation: identify applicable skills, give me the exact command
+to run for each one, analyze what I paste back, then move to the next skill. After all skills,
+synthesize findings into a MITRE-mapped report with severity ratings and remediation.
 
 Let's start: what's skill #1, and what exact command should I run?
+END
 ```
 
-Then:
-- Claude suggests **Skill 1** and the exact command to run
-- You copy the command and execute it (in another terminal):
-  ```bash
-  docker exec skill-lab [command Claude suggested]
-  ```
-- Paste the output back to Claude
-- Claude analyzes, suggests **Skill 2**
-- Repeat until all applicable skills are covered
+Your agent will suggest a command; run it yourself in another terminal (`docker exec skill-lab
+<command>`) and paste the output back, or — if your agent has its own `docker exec` access — just
+tell it to run the commands itself and report back.
 
-### Step 3: Findings synthesis
+`skill-lab` (used by Paths A and B above) deliberately has no internet access — it's an isolated
+practice sandbox. If you need to point live tools at a **real, authorized target** instead (a
+container, a URL, an API endpoint), that's Path C below, not this one.
 
-Once all skills are executed, Claude synthesizes:
-- **Confirmed vulnerabilities** (with proof from tool output)
-- **MITRE ATT&CK mapping** (which techniques)
-- **Risk rating** (CRITICAL/HIGH/MEDIUM/LOW)
-- **Remediation steps** (specific fixes)
-- **CISO report** (executive summary, prioritized actions)
+### Path C — live, authorized real-target investigations (`casky run --live-target`)
 
-### Alternative: Automated harness mode
-
-If you prefer fully automated (no interactive guidance):
+This uses `skill-live` instead of `skill-lab` — same tools, but with real internet/DNS egress —
+and only ever runs against infrastructure you're explicitly authorized to test (see
+[`SECURITY.md`](SECURITY.md)):
 
 ```bash
-# Platform mode
-docker exec -it casky-runner casky harness
-# (requires CASKY_TOKEN; fetches plan from app.casky.ai)
-
-# Or local mode
-docker cp /path/to/plan.json casky-runner:/home/casky/.casky/plans/my-plan.json
-docker exec -it casky-runner casky harness
+make live LIVE_TARGET=https://staging.example.com AUTHORIZED=yes SKILL=web-app AGENT=claude
 ```
+
+Both `AUTHORIZED=yes` and authorization confirmation at the `casky run` level are required every
+time — there's no way to set this once and forget it. You'll see a `[casky] LIVE TARGET MODE`
+banner before anything runs, confirming exactly what target and mode you're in. `LIVE_TARGET` can
+be a hostname, a full URL/API endpoint, or an existing container's name (run `docker network
+connect <its-network> skill-live` first so `skill-live` can actually reach it).
+
+Without `make live`:
+
+```bash
+SKILL_IMAGE=ghcr.io/casky-ai/skills/web-app:latest docker compose --profile live up -d --build skill-live
+docker exec skill-live curl -sI https://staging.example.com   # confirm reachability first
+docker exec -it casky-runner casky run web-app --live-target https://staging.example.com --i-have-authorization
+```
+
+## 7. Browse results in Casky UI
+
+Everything from step 6 — the plan, findings, remediation status, the outcome you recorded, and any
+organizational memory it surfaced — is queryable from a browser, not just the terminal.
+
+**First login:**
+```bash
+docker compose logs ui | grep -A5 "ADMIN PASSWORD"
+```
+That prints the auto-generated admin password once (only on first boot — it won't show up again on
+a restart, and the password itself doesn't change on restart either). If you'd rather set your own,
+put `CASKY_UI_ADMIN_PASSWORD=<your-choice>` in `.env` *before* first bringing the stack up.
+
+Open **http://127.0.0.1:8766**, log in, and check:
+- **Dashboard** — investigation/finding counts
+- **Investigations → [your investigation]** — the 8-tab detail view; `Execution` is the
+  chronological trace of what actually ran, `Outcome / Memory` is where a recorded outcome and any
+  extracted organizational memory show up
+- **Findings** — cross-investigation, filterable by severity/status
+- **Reports** — the consolidated report, downloadable as Markdown
+
+It's read/browse plus two narrow write paths (finding status, remediation notes) — you still start
+new investigations from the CLI (`casky harness`/`casky run`), not from the UI.
 
 ---
 
@@ -291,144 +314,155 @@ docker exec -it casky-runner casky harness
 | `osint` | shodan, censys, pwndb | — |
 | `devsecops` | checkov, snyk, trivy | — |
 
+**Note:** these 18 are the skill *image* categories (`casky run`/`casky verify <category>`). The
+classifier pipeline's internal `skill_category` grouping (`SUBDOMAIN_TO_CATEGORY` in `harness.py`) is
+a coarser 17-value mapping used only for plan-step labeling — `active-directory` evidence, for
+example, gets classified under the `identity` category rather than its own bucket. This doesn't
+affect which skill gets selected, only how the resulting step is labeled.
+
 ## Environment variables reference
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | — | Claude Code API key (required) |
-| `CASKY_TOKEN` | — | JWT for platform integration (optional) |
-| `CASKY_RUN_ID` | — | UUID linking findings to platform run |
-| `CASKY_APP_URL` | `https://app.casky.ai` | Platform URL override |
+| `ANTHROPIC_API_KEY` | — | Required unless you configure a different `CASKY_MODEL_PROVIDER` (see README) |
+| `CASKY_API_KEY` | — | Enables **platform mode** — fetches/syncs plans with casky.ai. Leave unset for fully local/offline use (this, not `CASKY_TOKEN`, is what actually switches the harness into platform mode) |
+| `CASKY_RUN_ID` / `CASKY_TOKEN` | — | Link a *single* skill run's findings to a platform run — separate from `CASKY_API_KEY` above |
+| `CASKY_APP_URL` | `https://casky.ai` | Platform URL override |
 | `SKILL_LAB_NAME` | `skill-lab` | Skill container name |
-| `SKILL_IMAGE` | `ghcr.io/casky-ai/skills/web-app:latest` | Skill container image |
-| `TARGET_IMAGE` | `ghcr.io/casky-ai/targets/dvwa:latest` | Target container image |
+| `SKILL_IMAGE` | `ghcr.io/casky-ai/skills/web-app:latest` | Which of the 18 real skill tool images `skill-lab` is built from — `make lab TARGET=<name>` sets this to match automatically; see the target/category table above |
+| `TARGET_IMAGE` | `alpine:latest` | Target container image, `lab-custom` profile only |
+| `DATABASE_URL` | bundled `db` service | Point Casky UI + the harness's persistence layer at your own Postgres instead |
+| `CASKY_UI_ADMIN_PASSWORD` | auto-generated on first boot | Casky UI's single-admin login — see step 7 |
+| `CASKY_UI_PORT` | `8766` | Host port Casky UI is reachable on |
+
+See `.env.example` for the complete annotated list, including BYO-LLM (`CASKY_MODEL_*`) and CVE
+enrichment API keys (all optional — NVD + EPSS + CISA KEV work with none of them set).
 
 ---
 
-## Testing Scenarios
+## Testing scenarios
 
-### Scenario 1: Interactive Web App Investigation (DVWA)
+### Scenario 1: Interactive web app investigation (DVWA)
 
 ```bash
-# Start DVWA stack
-docker compose --profile lab-dvwa --env-file .env.local up -d
-sleep 10
-
-# Verify target is ready
-docker exec skill-lab curl -s -I http://target/ | head -3
-
-# Start interactive investigation
+make lab TARGET=dvwa
+docker exec skill-lab curl -s -I http://target/ | head -3   # confirm target is up
 docker exec -it casky-runner casky run web-app
 ```
 
-Paste your evidence or this template:
+### Scenario 2: Tool verification across categories
 
-```
-# DVWA Investigation
-
-## Evidence
-- Target: http://target:80 (Apache/PHP)
-- Authentication: admin/password credentials
-- Application: DVWA (intentionally vulnerable web app)
-
-## Goal
-Guide me through a security assessment. For each skill:
-1. Show what MITRE techniques it covers
-2. Provide the exact command to run
-3. I'll paste the output back
-4. You analyze and suggest the next skill
-
-Let's start: what's the first skill?
-```
-
-### Scenario 2: Quick Tool Verification
+`skill-lab` only has one category's tools at a time — verifying a different category means
+rebuilding for it first (each `make lab` call replaces the previous build):
 
 ```bash
-# Verify skill-lab has all web-app tools
-docker exec casky-runner casky verify web-app
-
-# Verify other skill categories
-docker exec casky-runner casky verify cloud
-docker exec casky-runner casky verify network
+make lab TARGET=dvwa && docker exec casky-runner casky verify web-app
+make lab TARGET=localstack && docker exec casky-runner casky verify cloud
+make lab TARGET=pcap-server && docker exec casky-runner casky verify network
 ```
 
-### Scenario 3: Platform Integration
+### Scenario 3: Platform integration (optional)
 
-1. Set `CASKY_TOKEN` in `.env.local` (generate at `app.casky.ai/workspace/settings`)
-2. Run Casky Box: `docker compose --profile lab-dvwa up -d`
-3. Go to `app.casky.ai/investigate`
-4. Paste or upload evidence
-5. Platform generates a plan and dispatches to your Casky Box
-6. Watch findings stream live
-7. Generate CISO report when complete
+1. Set `CASKY_API_KEY` in `.env` (generate at casky.ai)
+2. `make lab TARGET=dvwa`
+3. `docker exec -it casky-runner casky harness` — this now runs in **PLATFORM MODE**, fetching your
+   existing investigation plans from casky.ai instead of generating a new one locally
+4. Findings sync back to your platform dashboard automatically
 
-### Scenario 4: Air-gapped (No Internet)
+### Scenario 4: Air-gapped / fully local
 
 ```bash
-# Run with CASKY_TOKEN empty
-docker compose --profile lab-dvwa up -d
-
-# Load a pre-exported plan (or create one manually)
-docker cp /path/to/plan.json casky-runner:/home/casky/.casky/plans/my-plan.json
-
-# Run the harness locally
-docker exec -it casky-runner casky harness
-
-# Retrieve findings
-docker exec casky-runner cat /var/casky/reports/my-plan/findings.json
+# Leave CASKY_API_KEY unset (or empty) — this is the default, no action needed
+make lab TARGET=dvwa
+docker exec -it casky-runner casky harness   # local mode: generate a plan from pasted evidence
 ```
 
-### Scenario 5: Custom Target
+### Scenario 5: Custom target
 
 ```bash
-# Set your own target image
 export TARGET_IMAGE=myapp:latest
-docker compose --profile lab-custom --env-file .env.local up -d
-
-# Verify it's reachable
-docker exec skill-lab curl -s http://target:80 | head -20
-
-# Run investigation
+make lab TARGET=custom   # override SKILL_IMAGE=... too if your image needs non-web-app tools
+docker exec skill-lab curl -s -I http://target/ | head -3
 docker exec -it casky-runner casky run web-app
 ```
+
+### Scenario 6: A different lab target/category (e.g. network recon against pcap-server)
+
+```bash
+make lab TARGET=pcap-server
+docker exec skill-lab which tshark tcpdump masscan   # confirm the right tools landed
+docker exec -it casky-runner casky run network
+```
+
+### Scenario 7: Live, authorized real-target investigation
+
+Only against infrastructure you have explicit authorization to test — see
+[`SECURITY.md`](SECURITY.md).
+
+```bash
+make live LIVE_TARGET=https://staging.example.com AUTHORIZED=yes SKILL=web-app AGENT=claude
+```
+
+Both `AUTHORIZED=yes` and `--i-have-authorization` (passed through automatically by `make live`)
+are required every time — omit either and it refuses to run. You'll see a `[casky] LIVE TARGET
+MODE` banner confirming the target before anything executes. `LIVE_TARGET` can also be an existing
+container's name if you first run `docker network connect <its-network> skill-live` so `skill-live`
+can actually reach it.
 
 ---
 
 ## Troubleshooting
 
-**Skill image tools missing after `casky verify`**
+**Starting completely fresh (ghost containers, stale volumes, switching targets)**
+
+The lighter fix below (remove orphans, retry) covers most cases. For a full reset — no leftover
+containers, no stale Postgres data, nothing holding a reference to a since-recreated network:
 ```bash
-docker compose pull skill-lab
-docker compose --profile lab restart
+docker rm -f casky-runner casky-skills casky-db casky-ui skill-lab casky-target casky-target-db 2>/dev/null
+docker compose down -v   # -v also removes volumes (investigation data, Postgres data) — omit to keep them
+docker compose --profile lab-dvwa up -d   # or whichever target you're using
+```
+
+**Skill image tools missing / wrong category after `casky verify`**
+
+`skill-lab` is built locally (not pulled) from whichever `SKILL_IMAGE` it was last built with —
+rebuild it for the category you actually want:
+```bash
+make lab TARGET=<matching-target>   # e.g. TARGET=pcap-server for network tools
+# or manually:
+SKILL_IMAGE=ghcr.io/casky-ai/skills/<category>:latest docker compose --profile lab-<target> up -d --build
 ```
 
 **`docker exec` permission denied**
 ```bash
-# On Linux, add your user to docker group:
+# Linux only — add your user to the docker group
 sudo usermod -aG docker $USER
 newgrp docker
 ```
 
-**Port already in use**
+**`docker compose up` fails with "network ... not found"**
+
+Usually stale containers left over from an earlier session holding a reference to a since-recreated
+network. Remove the orphans and retry:
 ```bash
-# Casky Box uses docker.sock (no external ports by default)
-# If localhost:8765 blocked, check for conflicting services
-lsof -i :8765
+docker rm -f skill-lab casky-target
+docker compose --profile lab-dvwa up -d
 ```
 
-**Platform findings not arriving**
-- Verify `CASKY_TOKEN` is set and valid (check workspace settings on app.casky.ai)
-- Check runner logs: `docker compose logs -f casky-runner`
-- Confirm network connectivity: `docker exec casky-runner curl https://app.casky.ai`
+**`casky harness`/`casky run` seems to hang after pasting evidence**
 
-**"No plans" when running harness**
-- In local mode: manually create or export a plan JSON and copy it to `/home/casky/.casky/plans/`
-- In platform mode: approve an investigation at app.casky.ai/investigate first
+Type `END` on its own line and press Enter rather than relying on Ctrl+D — see the note in step 6
+above for why Ctrl+D alone can be ambiguous with pasted multi-line text.
+
+**Platform findings not arriving**
+- Confirm `CASKY_API_KEY` (not `CASKY_TOKEN`) is set and valid
+- Check runner logs: `docker compose logs -f runner`
+- Confirm connectivity: `docker exec casky-runner curl -sI https://casky.ai`
 
 ---
 
 ## Next steps
 
-- Read **[Investigating Security Incidents with Casky](../blog-investigating-with-casky.md)** for the full investigation workflow
-- Check **[v1.1 Architecture Plan](../plans/025_consolidated.md)** for technical details (Context Graph, Evidence Library, Marketplace)
-- Explore the **[18 skill categories](#skill-image-categories-18-total)** and their target pairs
+- Read [README.md](README.md) for the full architecture, BYO-Agent/LLM/DB configuration, and known limitations
+- Read [CLAUDE.md](CLAUDE.md) if you're using an AI coding agent to contribute to this repo
+- Read [PHASE1_CONTRACT.md](PHASE1_CONTRACT.md) for the detailed design record of the `casky_pipeline` architecture

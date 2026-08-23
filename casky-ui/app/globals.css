@@ -1,0 +1,33 @@
+@import "tailwindcss";
+@plugin "@tailwindcss/typography";
+
+/*
+ * @casky/ui-kit's components (FindingCard, MarkdownReport, etc.) are
+ * authored against a dark surface — bg-white/[0.03], border-white/[0.07],
+ * text-[#EAF2FF], prose-invert — the same visual language as
+ * claude-skills-security/apps/web. We match that here at the app-shell
+ * level rather than inventing a different light theme, so components look
+ * identical in both apps (see packages/ui-kit/src/tokens.ts's own note
+ * about not re-deriving color decisions per-app).
+ */
+:root {
+  --background: #0b1220;
+  --surface: #101826;
+  --border: rgba(255, 255, 255, 0.08);
+  --foreground: #eaf2ff;
+  --muted: rgba(255, 255, 255, 0.45);
+}
+
+html,
+body {
+  background: var(--background);
+  color: var(--foreground);
+}
+
+body {
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+a {
+  color: inherit;
+}

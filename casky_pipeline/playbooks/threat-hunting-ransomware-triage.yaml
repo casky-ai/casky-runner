@@ -1,0 +1,56 @@
+id: threat-hunting-ransomware-triage
+name: Ransomware Triage Threat Hunt
+domain: threat-hunting
+mitre_techniques:
+  - T1486
+  - T1489
+  - T1490
+description: >
+  Rapid threat-hunting triage for a suspected active ransomware event —
+  confirming mass file encryption, service-stop behavior used to disable
+  security tooling, and shadow-copy/backup deletion used to inhibit recovery,
+  then pivoting to the initial encryptor process.
+steps:
+  - skill_slug: mass-file-rename-entropy-hunt
+    skill_category: ransomware-defense
+    technique_id: T1486
+    technique_name: Data Encrypted for Impact
+    rationale: Evidence describes widespread file inaccessibility or renamed
+      extensions consistent with active encryption; a mass rename/entropy
+      sweep confirms scope and encryption onset time across affected shares.
+    evidence_focus: File rename event bursts, Shannon entropy of modified
+      files, ransom-note filenames dropped in affected directories
+    step_order: 1
+  - skill_slug: vss-shadow-copy-deletion-detection
+    skill_category: ransomware-defense
+    technique_id: T1490
+    technique_name: Inhibit System Recovery
+    rationale: Most ransomware families delete Volume Shadow Copies and
+      disable Windows recovery options immediately before or during
+      encryption to prevent restoration without paying the ransom.
+    evidence_focus: vssadmin/wmic shadowcopy delete command lines, bcdedit
+      recovery-mode changes, wbadmin backup catalog deletion
+    step_order: 2
+  - skill_slug: security-service-stop-detection
+    skill_category: ransomware-defense
+    technique_id: T1489
+    technique_name: Service Stop
+    rationale: Ransomware operators frequently stop AV/EDR/backup agent
+      services just before detonation; identifying which services were
+      stopped and when narrows the detonation timestamp precisely.
+    evidence_focus: Service Control Manager stop events, taskkill/net stop
+      command lines targeting security or backup processes
+    step_order: 3
+  - skill_slug: edr-process-tree-encryptor-pivot
+    skill_category: ransomware-defense
+    technique_id: T1486
+    technique_name: Data Encrypted for Impact
+    rationale: Once the encryption window is confirmed, pivoting through the
+      EDR process tree from an early-encrypted host identifies the actual
+      encryptor binary and its parent process for attribution and IOC extraction.
+    evidence_focus: Process tree ancestry of the encryptor binary, binary
+      hash/signature, command-line arguments and target-path scoping logic
+    step_order: 4
+evidence_gaps:
+  - Backup infrastructure logs were unavailable to confirm whether offline backups were also targeted
+  - Initial access vector into the environment is not yet established
