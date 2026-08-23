@@ -305,6 +305,50 @@ class LocalSkillsLibrary:
         p = self.path / "skills" / slug / "assets" / "template.md"
         return p if p.exists() else None
 
+    def symlink_for_native_loading(self, slug: str) -> None:
+        """Symlink this skill into ~/.claude/skills/<slug> — Claude Code's own
+        native skill-loading directory — so 'claude --print' discovers it as a
+        first-class Skill (verified empirically: --print does read from there)
+        rather than relying solely on assemble_prompt()'s injected prompt text.
+        This is the same mechanism the upstream project's own Black Hat Arsenal
+        deployment uses (BHUSA-Anthropic-CyberSecurity-Skills/setup-skills.sh),
+        except there it's a static day-before step for 10 hand-picked skills;
+        here it's done per classifier-selected step, since casky_pipeline's
+        SkillSelector already narrows 817 skills down to a handful per plan —
+        no separate curation needed.
+
+        Best-effort and additive, never a hard dependency: assemble_prompt()'s
+        prompt-level guidance already works without this, so a failure here
+        (permissions, HOME not writable, etc.) is logged and swallowed, not
+        raised — it must never block the actual investigation.
+
+        Symlinks accumulate in ~/.claude/skills/ across a container's lifetime
+        (not cleaned up per-step) — harmless: bounded by the total distinct
+        skills ever run in this container (well under 817 in practice), wiped
+        on container recreation since ~/.claude isn't a persisted volume.
+        """
+        skill_source = self.path / "skills" / slug
+        if not skill_source.is_dir():
+            return
+        try:
+            skills_dir = Path.home() / ".claude" / "skills"
+            skills_dir.mkdir(parents=True, exist_ok=True)
+            link_path = skills_dir / slug
+            if link_path.is_symlink():
+                if link_path.resolve() == skill_source.resolve():
+                    return  # already linked correctly, nothing to do
+                link_path.unlink()
+            elif link_path.exists():
+                # A real file/dir already occupies this name — don't clobber
+                # something unexpected, just skip native loading for this skill.
+                return
+            link_path.symlink_to(skill_source)
+        except OSError as e:
+            console.print(
+                f"[yellow]Could not symlink skill '{slug}' into ~/.claude/skills "
+                f"(non-fatal, prompt-level guidance still applies): {e}[/yellow]"
+            )
+
     def subdomain_summary(self) -> str:
         lines = []
         for s in self.load_index():
@@ -993,6 +1037,12 @@ class AgentWorker:
             token = run_data["token"]
 
         prompt = assemble_prompt(plan, step)
+
+        # Native skill loading, alongside (not instead of) assemble_prompt()'s
+        # injected guidance — see LocalSkillsLibrary.symlink_for_native_loading()
+        # for why. Must run before the subprocess below so ~/.claude/skills/ is
+        # populated by the time 'casky run' invokes 'claude --print'.
+        LocalSkillsLibrary().symlink_for_native_loading(step.skill_slug)
 
         env = {
             **os.environ,
