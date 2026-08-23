@@ -272,6 +272,39 @@ class LocalSkillsLibrary:
     def get_agent_script(self, slug: str) -> Path:
         return self.path / "skills" / slug / "scripts" / "agent.py"
 
+    def get_executable_script(self, slug: str) -> Path | None:
+        """The skill's primary runnable script. The 817-skill library uses two
+        conventions — scripts/agent.py (809 skills) and scripts/process.py (282
+        skills) — every skill has at least one of the two; a handful have both,
+        in which case agent.py wins (matches the "agent" framing the rest of the
+        assembled prompt uses). Returns None only if neither exists, which
+        shouldn't happen for any real skill but isn't assumed — on-disk state
+        can drift from what upstream promises."""
+        skill_dir = self.path / "skills" / slug / "scripts"
+        for name in ("agent.py", "process.py"):
+            candidate = skill_dir / name
+            if candidate.exists():
+                return candidate
+        return None
+
+    def get_reference_files(self, slug: str) -> list[Path]:
+        """references/*.md for a skill — standards.md (MITRE ATT&CK/ATLAS/D3FEND/
+        NIST mappings), workflows.md (deep technical procedure), api-reference.md
+        (API/tool reference), or whatever else a given skill ships; coverage
+        varies per skill (api-reference.md alone covers 810/817, standards.md
+        only 351/817) so this returns whatever actually exists, not a fixed set.
+        Sorted for deterministic prompt output."""
+        refs_dir = self.path / "skills" / slug / "references"
+        if not refs_dir.is_dir():
+            return []
+        return sorted(refs_dir.glob("*.md"))
+
+    def get_report_template(self, slug: str) -> Path | None:
+        """assets/template.md — a filled-in example report/checklist for this
+        skill. Only 287/817 skills ship one; None when absent."""
+        p = self.path / "skills" / slug / "assets" / "template.md"
+        return p if p.exists() else None
+
     def subdomain_summary(self) -> str:
         lines = []
         for s in self.load_index():
@@ -882,20 +915,42 @@ def assemble_prompt(plan: Plan, step: Step) -> str:
         parts.append("\n---\n")
 
     # casky.sh's own ENV_SECTION already tells the agent that every skill under
-    # /opt/skills-library/skills/<slug>/scripts/agent.py is a tested, self-contained
-    # implementation to prefer over hand-written commands — but it only knows the
-    # broad category (e.g. "web-app"), not which of the 753 skills this specific step
-    # is. Since this step's exact skill_slug IS known here, surface the concrete path
-    # up front instead of leaving the agent to guess it from a <skill-slug> placeholder.
-    # get_agent_script() only builds the path (doesn't require the file to exist) — see
-    # LocalSkillsLibrary; existence is checked here since not every skill ships one.
-    agent_script = LocalSkillsLibrary().get_agent_script(step.skill_slug)
-    if agent_script.exists():
+    # /opt/skills-library/skills/<slug>/ ships tested code plus reference material —
+    # but it only knows the broad category (e.g. "web-app"), not which of the 817
+    # skills this specific step is. Since this step's exact skill_slug IS known
+    # here, surface everything concretely instead of leaving the agent to guess a
+    # <skill-slug> placeholder. Every one of the 817 skills has an executable
+    # script (agent.py or process.py); references/ and assets/template.md exist
+    # for only some, so those sections are added only when something's there.
+    library = LocalSkillsLibrary()
+
+    script = library.get_executable_script(step.skill_slug)
+    if script:
         parts.append(
             f"## This skill's own implementation\n\n"
-            f"docker exec <skill-container> python3 {agent_script} --help\n\n"
+            f"docker exec <skill-container> python3 {script} --help\n\n"
             f"Prefer running this over improvising your own exploitation code — it's tested, "
             f"known-working code for exactly this technique.\n\n---\n"
+        )
+
+    reference_files = library.get_reference_files(step.skill_slug)
+    if reference_files:
+        listing = "\n".join(f"  docker exec <skill-container> cat {p}" for p in reference_files)
+        parts.append(
+            f"## Reference material for this skill\n\n"
+            f"Deeper technical context beyond SKILL.md's workflow summary — standards/framework "
+            f"mappings (MITRE ATT&CK/ATLAS/D3FEND/NIST), detailed procedures, or API/tool "
+            f"reference, depending on what this skill ships. Read whichever's relevant before "
+            f"improvising:\n{listing}\n\n---\n"
+        )
+
+    report_template = library.get_report_template(step.skill_slug)
+    if report_template:
+        parts.append(
+            f"## Report template for this skill\n\n"
+            f"docker exec <skill-container> cat {report_template}\n\n"
+            f"A filled-in example of what a finished finding/report for this technique looks "
+            f"like — use it as the structure for your own write-up.\n\n---\n"
         )
 
     parts.append("## Evidence for this investigation\n")

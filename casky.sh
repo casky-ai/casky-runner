@@ -157,22 +157,30 @@ Examples:
 
 ${ENV_SECTION}
 
-The skills library (all 753+ skills — documentation AND runnable code, read-only) is mounted
-at /opt/skills-library inside ${CONTAINER} — NOT /skills. Each skill has two things at
-/opt/skills-library/skills/<skill-slug>/:
-  SKILL.md            — the narrative playbook (when to use it, workflow, key concepts)
-  scripts/agent.py     — a self-contained Python implementation of the technique (stdlib +
-                         common libs only, e.g. requests — no extra install needed)
+The skills library (all 817 skills — documentation, reference material, AND runnable code,
+read-only) is mounted at /opt/skills-library inside ${CONTAINER} — NOT /skills. Each skill has
+up to four things at /opt/skills-library/skills/<skill-slug>/ (not every skill ships all four):
+  SKILL.md              — the narrative playbook (when to use it, workflow, key concepts)
+  scripts/agent.py or    — a self-contained Python implementation of the technique (stdlib +
+  scripts/process.py      common libs only, e.g. requests — no extra install needed). Every
+                           skill has one or the other; check both names.
+  references/*.md        — deeper technical context: standards.md (MITRE ATT&CK/ATLAS/D3FEND/
+                           NIST mappings), workflows.md (detailed procedure), api-reference.md
+                           (API/tool reference) — whichever the skill ships
+  assets/template.md     — a filled-in example report/checklist for this technique
 
-Prefer running a skill's own agent.py over improvising your own exploitation code by hand —
-it's tested, known-working code, not something you have to write from scratch. Check its
---help first, since arguments vary per skill:
+Prefer running a skill's own script over improvising your own exploitation code by hand — it's
+tested, known-working code, not something you have to write from scratch. Check its --help
+first, since arguments vary per skill. Check for reference material and a report template too
+before falling back to raw CLI tools or hand-written commands/reports:
   docker exec ${CONTAINER} cat /opt/skills-library/skills/<skill-slug>/SKILL.md
-  docker exec ${CONTAINER} python3 /opt/skills-library/skills/<skill-slug>/scripts/agent.py --help
-  docker exec ${CONTAINER} python3 /opt/skills-library/skills/<skill-slug>/scripts/agent.py <args>
+  docker exec ${CONTAINER} ls /opt/skills-library/skills/<skill-slug>/references/ 2>/dev/null
+  docker exec ${CONTAINER} python3 /opt/skills-library/skills/<skill-slug>/scripts/agent.py --help \
+    || docker exec ${CONTAINER} python3 /opt/skills-library/skills/<skill-slug>/scripts/process.py --help
+  docker exec ${CONTAINER} cat /opt/skills-library/skills/<skill-slug>/assets/template.md 2>/dev/null
 
-Not every skill's SKILL.md happens to mention its own agent.py in its narrative — check for one
-regardless before falling back to raw CLI tools or hand-written scripts.
+Not every skill's SKILL.md happens to mention its own script/references/template in its
+narrative — check for them regardless.
 
 Do NOT enter either container interactively.${REPORT_SECTION}"
 
