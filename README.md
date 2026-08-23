@@ -369,6 +369,38 @@ registry.
 Target images are published from [casky-ai/skill-targets](https://github.com/casky-ai/skill-targets)
 to `ghcr.io/casky-ai/targets/<name>:latest`.
 
+### How the agent uses a skill
+
+Anthropic Cybersecurity Skills is an [agentskills.io](https://agentskills.io)-standard knowledge
+base, not just a script collection — every skill under `/opt/skills-library/skills/<slug>/` ships
+up to four things (not every skill ships all four):
+
+| File | What it is |
+|---|---|
+| `SKILL.md` | The narrative playbook — when to use it, workflow, key concepts |
+| `scripts/agent.py` or `scripts/process.py` | A tested, self-contained implementation of the technique (stdlib + common libs, e.g. `requests` — no extra install). Every skill has one or the other. |
+| `references/*.md` | Deeper technical context — `standards.md` (MITRE ATT&CK/ATLAS/D3FEND/NIST mappings), `workflows.md` (detailed procedure), `api-reference.md` (API/tool reference) — whichever a skill ships |
+| `assets/template.md` | A filled-in example report/checklist for that technique (287/817 skills ship one) |
+
+`casky harness` (the classifier-driven path, which knows exactly which skill each step is)
+surfaces all of this automatically, via two independent mechanisms:
+
+1. **Prompt injection** — `assemble_prompt()` tells the agent to prefer the skill's own script over
+   improvising commands, lists its reference files, and points at its report template, with the
+   concrete resolved path for each.
+2. **Native skill loading** — the selected skill is symlinked into `~/.claude/skills/<slug>/`
+   right before running, so `claude --print` discovers it as a first-class Claude Code Skill (not
+   just prose in the prompt) — the same mechanism [the skills library's own Black Hat Arsenal
+   deployment](https://github.com/mukul975/BHUSA-Anthropic-CyberSecurity-Skills) uses.
+
+Neither mechanism *forces* the agent to use a skill's script — both are steering, not enforcement,
+matching how the skills library itself is designed to be used (an accelerant, not an oracle). Raw
+CLI tools (nmap, sqlmap, etc., already installed in `skill-lab`/`skill-live`) remain the fallback
+for the skills that ship no script, or anything a script doesn't cover.
+
+`casky run <category>` (no classifier, no specific skill known ahead of time) gets the same
+guidance in generic, pattern-level form — see `casky.sh`'s `run)` prompt.
+
 ### Investigation playbooks
 
 `casky_pipeline/playbooks/` ships 12 starter playbooks (credential dumping, cloud IAM privilege

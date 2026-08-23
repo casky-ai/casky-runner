@@ -207,6 +207,11 @@ file's contents. `casky harness` doesn't accept literal `.pcap` files — for pa
 `evidence/` instead. `evidence/` is gitignored (except its own README) — evidence can contain real
 investigation data and must never be committed.
 
+**Executing the plan** (`--auto`, or stepping through the printed runbook manually): for each step,
+the agent is pointed at that skill's own tested script (`scripts/agent.py`/`process.py`), reference
+material, and report template — not left to invent commands from scratch. See README's "How the
+agent uses a skill" for what's actually happening under the hood.
+
 ### Path B — interactive: guided step-by-step with your coding agent (`casky run`)
 
 For a more conversational flow where your agent proposes one command at a time and you paste results
