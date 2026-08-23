@@ -9,6 +9,8 @@ BYO-LLM / BYO-DB configuration reference; this doc is a hands-on walkthrough.
 - `casky harness` — evidence in, an ordered MITRE-mapped investigation plan out, via the 4-stage
   classifier pipeline described in [README.md](README.md#how-a-plan-actually-gets-built)
 - `casky run <skill>` — interactive, human-in-the-loop investigation guided by your chosen coding agent
+- `casky run <skill> --live-target` — the same, but against a real, authorized target (a container,
+  URL, or API endpoint) instead of the practice lab — see Path C in step 6 below
 - Structured findings (severity, remediation, MITRE mapping), saved locally, synced to a platform
   dashboard only if you opt in
 
@@ -234,6 +236,34 @@ END
 Your agent will suggest a command; run it yourself in another terminal (`docker exec skill-lab
 <command>`) and paste the output back, or — if your agent has its own `docker exec` access — just
 tell it to run the commands itself and report back.
+
+`skill-lab` (used by Paths A and B above) deliberately has no internet access — it's an isolated
+practice sandbox. If you need to point live tools at a **real, authorized target** instead (a
+container, a URL, an API endpoint), that's Path C below, not this one.
+
+### Path C — live, authorized real-target investigations (`casky run --live-target`)
+
+This uses `skill-live` instead of `skill-lab` — same tools, but with real internet/DNS egress —
+and only ever runs against infrastructure you're explicitly authorized to test (see
+[`SECURITY.md`](SECURITY.md)):
+
+```bash
+make live LIVE_TARGET=https://staging.example.com AUTHORIZED=yes SKILL=web-app AGENT=claude
+```
+
+Both `AUTHORIZED=yes` and authorization confirmation at the `casky run` level are required every
+time — there's no way to set this once and forget it. You'll see a `[casky] LIVE TARGET MODE`
+banner before anything runs, confirming exactly what target and mode you're in. `LIVE_TARGET` can
+be a hostname, a full URL/API endpoint, or an existing container's name (run `docker network
+connect <its-network> skill-live` first so `skill-live` can actually reach it).
+
+Without `make live`:
+
+```bash
+SKILL_IMAGE=ghcr.io/casky-ai/skills/web-app:latest docker compose --profile live up -d --build skill-live
+docker exec skill-live curl -sI https://staging.example.com   # confirm reachability first
+docker exec -it casky-runner casky run web-app --live-target https://staging.example.com --i-have-authorization
+```
 
 ## 7. Browse results in Casky UI
 

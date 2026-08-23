@@ -197,17 +197,24 @@ path, stored in `runtime_settings`).
 
 ---
 
-## Two ways to investigate — and where the lab targets fit in
+## Three ways to investigate — and where the lab targets fit in
 
 These are independent, unrelated workflows. Pick whichever matches what you're starting from — you
-don't need both, and nothing wires them together automatically.
+don't need all three, and nothing wires them together automatically.
+
+| You have... | Use | Touches a live target? |
+|---|---|---|
+| Evidence already collected — logs, a CloudTrail export, pcap-derived text, analyst notes | **Path A** — `casky harness` | No — reads text/files only |
+| Nothing yet, want to practice or demo against a safe, disposable target | **Path B** — `make lab` + `casky run` | Yes — but only the sandboxed lab target, no internet egress |
+| A real, authorized target you need to investigate live (a container, a URL, an API endpoint) | **Path C** — `make live` + `casky run --live-target` | Yes — real internet egress, explicit authorization required every time |
 
 **A. Evidence-driven — you already have something to analyze.** A CloudTrail export, a suspicious log
-line, `tshark`/`tcpdump` output from a pcap, analyst notes. Feed it to the classifier and get an
+line, `tshark`/`tcpdump` output from a pcap, analyst notes — plain text, JSON, YAML, or CSV all work,
+the classifier reads whatever you give it as-is with no format-specific parsing. Feed it in and get an
 ordered, MITRE-mapped investigation plan back:
 
 ```bash
-docker exec -it casky-runner casky harness -i /var/casky/evidence/yourfile.json   # from a file — see below
+docker exec -it casky-runner casky harness -i /var/casky/evidence/yourfile.json   # from a file — .json/.yaml/.csv/.txt all work, see below
 docker exec -it casky-runner casky harness                                       # or paste it interactively
 ```
 
@@ -227,6 +234,41 @@ docker exec -it casky-runner casky run web-app   # category must match the tool 
 Only one target runs at a time (they all resolve to the stable hostname `target`) — switching
 targets means tearing down the old one first: `docker compose --profile lab-<old> down` (or
 `docker rm -f casky-target skill-lab` if you hit a "name already in use" error).
+
+`skill-lab` deliberately has **no internet access** (`docker-compose.yml`'s `casky-lab` network is
+`internal: true`, plus `dns: []`) — it's a safety guardrail, not a bug. That means Path B can never
+be pointed at a real target no matter what hostname you give it. For a real target, use Path C.
+
+**C. Live, authorized real-target investigations — you have a real system you're authorized to test.**
+A container, a URL, or an API endpoint you own or have explicit written permission to test. This uses
+`skill-live` instead of `skill-lab` — same tools, but with real internet/DNS egress instead of the
+lab's isolated network — and requires you to confirm authorization on every single invocation:
+
+```bash
+make live LIVE_TARGET=https://staging.example.com AUTHORIZED=yes SKILL=web-app AGENT=claude
+```
+
+`AUTHORIZED=yes` on the command line and `--i-have-authorization` (which `make live` passes through
+to `casky run` for you) are both required — omit either and it refuses to run, printing the same
+authorization requirement as [`SECURITY.md`](SECURITY.md). Every live-target run also prints a loud
+`[casky] LIVE TARGET MODE` banner before any tool executes, so it's never ambiguous which mode you're
+in.
+
+`LIVE_TARGET` accepts:
+- **A hostname/IP** or **a full URL/API endpoint** — the common case, e.g. `https://api.example.com/v1`.
+- **An existing container** — run `docker network connect <its-network> skill-live` first so
+  `skill-live` can actually reach it, then pass its container name as `LIVE_TARGET`.
+
+Without `make live`, the equivalent is:
+
+```bash
+SKILL_IMAGE=ghcr.io/casky-ai/skills/web-app:latest docker compose --profile live up -d --build skill-live
+docker exec skill-live curl -sI https://staging.example.com   # confirm reachability first
+docker exec -it casky-runner casky run web-app --live-target https://staging.example.com --i-have-authorization
+```
+
+**Only ever run Path C against infrastructure you have explicit authorization to test** — see
+[`SECURITY.md`](SECURITY.md) for the full trust-model discussion.
 
 **The full target catalogue.** Every target below is a real, published image from
 [`casky-ai/skill-targets`](https://github.com/casky-ai/skill-targets) (`dvwa`/`juice-shop` use
@@ -268,7 +310,8 @@ mount, and evidence size limits.
 
 | Command | Description |
 |---|---|
-| `casky run <skill> [--agent claude\|gemini\|copilot\|custom] [--agent-cmd "<binary>"]` | Run a single skill investigation |
+| `casky run <skill> [--agent claude\|gemini\|copilot\|custom] [--agent-cmd "<binary>"]` | Run a single skill investigation against the sandboxed lab target |
+| `casky run <skill> --live-target <host\|url> --i-have-authorization [--agent ...]` | Run a single skill investigation against a real, authorized target — see "Live, authorized real-target investigations" above and [`SECURITY.md`](SECURITY.md) |
 | `casky verify <skill>` | Check the skill container has all required tools |
 | `casky harness [-i\|--input-file <path>] [--auto]` | Run the full investigation harness (entity extraction → adapters → plan → execution). `-i` reads evidence from a file instead of the interactive paste prompt — drop it in `./evidence/` on the host (bind-mounted read-only to `/var/casky/evidence`, see `docker-compose.yml`) and pass the in-container path. |
 
@@ -284,7 +327,8 @@ mount, and evidence size limits.
 | `CASKY_UI_ADMIN_PASSWORD` | Casky UI's single-admin login. Leave unset to auto-generate one on first boot (printed once to `docker compose logs ui`) | Optional |
 | `CASKY_UI_PORT` | Host port Casky UI is reachable on | Optional, default `8766` |
 | `CASKY_UI_HOST` | Bind address for `CASKY_UI_PORT` — `0.0.0.0` to expose beyond localhost (no RBAC, think first) | Optional, default `127.0.0.1` |
-| `SKILL_LAB_NAME` | Name of the running skill container | Optional, default `skill-lab` |
+| `SKILL_LAB_NAME` | Name of the running skill container (Path B, sandboxed lab) | Optional, default `skill-lab` |
+| `SKILL_LIVE_NAME` | Name of the running skill container (Path C, live/authorized target) | Optional, default `skill-live` |
 | `CASKY_APP_URL` | Platform URL override | Optional, only relevant if syncing to casky.ai |
 | `CASKY_API_KEY` | **This is what switches `casky harness` into platform mode** (fetches/syncs investigation plans with casky.ai). Leave unset for fully local/offline use — this is the one that matters for "am I in local or platform mode?" | Optional |
 | `CASKY_RUN_ID` / `CASKY_TOKEN` | A *separate* mechanism from `CASKY_API_KEY` above — links one `casky run <skill>` execution's findings back to a specific platform run via `POST /api/runs/[id]/report`. Not what you need for general plan sync | Optional |
@@ -348,6 +392,7 @@ make run SKILL=web-app AGENT=claude   # needs `docker compose up -d` first — r
                                        # the live stack (DB + skills library + network), same
                                        # as `docker exec -it casky-runner casky run ...`
 make verify SKILL=web-app   # confirm skill-lab has all required tools
+make live LIVE_TARGET=https://staging.example.com AUTHORIZED=yes SKILL=web-app   # real, authorized target — see "Live, authorized real-target investigations" above
 ```
 
 `make pytest` creates a local `.venv` on first run if one doesn't exist (`pytest`,

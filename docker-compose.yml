@@ -189,6 +189,30 @@ services:
     # No internet access for the skill container — it scans the target only
     dns: []
 
+  # ── Live-target skill container (real, authorized targets only) ─────────────
+  # Same image/tools as skill-lab (same Dockerfile, same SKILL_IMAGE build arg) but
+  # wired for real network reachability instead of isolation — no casky-lab network,
+  # no dns: [] override. Started via `make live` (see README's "Live, authorized
+  # real-target investigations" section and SECURITY.md), never by `make lab`.
+  # `casky run --live-target ... --i-have-authorization` is the only supported way
+  # to point tools at it — see casky.sh.
+  skill-live:
+    profiles:
+      - live
+    build:
+      context: .
+      dockerfile: docker/skill-lab/Dockerfile
+      args:
+        SKILL_IMAGE: ${SKILL_IMAGE:-ghcr.io/casky-ai/skills/web-app:latest}
+    image: casky-skill-live:latest
+    container_name: skill-live
+    restart: unless-stopped
+    command: sleep infinity
+    volumes:
+      - casky-skills-data:/opt/skills-library:ro   # skills library (read-only) for agent.py scripts
+    networks:
+      - casky-internal   # Real internet/DNS egress — deliberate, this is the live-target container
+
   # ── CVE MCP Server (Phase 2: CVE Enrichment — Optional) ─────────────────────
   # NOTE: cve_mcp module not yet implemented. This service will be added in a
   # follow-up. For now, Phase 2 tests run without MCP enrichment.

@@ -5,7 +5,7 @@ AGENT        ?= claude
 
 .DEFAULT_GOAL := help
 
-.PHONY: help build scan lint test pytest test-compose test-compose-lab shell run verify push clean lab smoke smoke-full
+.PHONY: help build scan lint test pytest test-compose test-compose-lab shell run verify push clean lab live smoke smoke-full
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?##' $(MAKEFILE_LIST) \
@@ -98,6 +98,19 @@ lab: ## Start a lab target + matching skill-lab tools (TARGET=vulnstack|metasplo
 	esac; \
 	echo "Starting lab-$(TARGET) — skill-lab built from $$SKILL_IMAGE"; \
 	SKILL_IMAGE=$$SKILL_IMAGE docker compose --profile lab-$(TARGET) up -d --build
+
+live: ## Run a skill against a REAL, authorized target (LIVE_TARGET=<host|url> AUTHORIZED=yes SKILL=web-app AGENT=claude)
+	@if [ "$(AUTHORIZED)" != "yes" ] || [ -z "$(LIVE_TARGET)" ]; then \
+	  echo "Live-target mode runs real offensive security tools against a real system, with"; \
+	  echo "real internet egress (skill-live) — not the sandboxed, internet-isolated skill-lab."; \
+	  echo "Only use this against infrastructure you have explicit authorization to test."; \
+	  echo "See SECURITY.md and README's 'Live, authorized real-target investigations' section."; \
+	  echo ""; \
+	  echo "Usage: make live LIVE_TARGET=<host-or-url> AUTHORIZED=yes SKILL=web-app AGENT=claude"; \
+	  exit 1; \
+	fi
+	SKILL_IMAGE=ghcr.io/casky-ai/skills/$(SKILL):latest docker compose --profile live up -d --build skill-live
+	docker compose exec -it runner casky run $(SKILL) --agent $(AGENT) --live-target $(LIVE_TARGET) --i-have-authorization
 
 smoke: ## Fast smoke test — casky_pipeline/casky_db unit tests + casky-ui tests/typecheck/build (no Docker Postgres needed)
 	./scripts/smoke-test.sh

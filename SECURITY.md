@@ -8,6 +8,14 @@ containers, with `/var/run/docker.sock` mounted into the `runner` container so i
 same way you'd treat a machine with root Docker access, and never run this against infrastructure
 you don't have explicit authorization to test.
 
+By default, live tool execution (`casky run`/`make lab`) only ever touches `skill-lab`, which has
+**no internet egress** (`docker-compose.yml`'s `casky-lab` network is `internal: true`) — it can
+only reach the disposable lab target on that same isolated network. Pointing tools at a real,
+externally-reachable target is a separate, explicitly opt-in mode (`make live` / `casky run
+--live-target <host|url> --i-have-authorization`, using `skill-live` instead) — see README's
+"Live, authorized real-target investigations" section. The authorization requirement above applies
+in full to that mode: only use it against infrastructure you have explicit authorization to test.
+
 ## Supported components
 
 | Component | Supported |

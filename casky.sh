@@ -19,25 +19,48 @@ shift || true
 case "$COMMAND" in
 
   run)
-    # casky run <skill-category> [--agent claude|gemini]
+    # casky run <skill-category> [--agent claude|gemini] [--live-target <host|url> --i-have-authorization]
     #
     # <skill-category> is one of the 18 skill image categories (web-app, forensics, …).
     # The actual skill prompt (from the 753-skill registry) is read from stdin —
     # paste the SKILL.md content, then press Ctrl+D.
+    #
+    # --live-target switches from the sandboxed lab (skill-lab, no internet egress) to
+    # skill-live (real internet egress, see docker-compose.yml) — only for a real,
+    # authorized target. Requires --i-have-authorization every time; see README's
+    # "Live, authorized real-target investigations" section and SECURITY.md.
     CATEGORY="${1:-}"; shift || true
     AGENT="claude"
     AGENT_CMD=""
+    LIVE_TARGET=""
+    I_HAVE_AUTHORIZATION=false
     while [[ $# -gt 0 ]]; do
       case "$1" in
         --agent) AGENT="$2"; shift 2 ;;
         --agent-cmd) AGENT_CMD="$2"; shift 2 ;;
+        --live-target) LIVE_TARGET="$2"; shift 2 ;;
+        --i-have-authorization) I_HAVE_AUTHORIZATION=true; shift ;;
         *) shift ;;
       esac
     done
 
-    [[ -z "$CATEGORY" ]] && { echo "Usage: casky run <category> [--agent claude|gemini|copilot|custom] [--agent-cmd \"<binary>\"]"; exit 1; }
+    [[ -z "$CATEGORY" ]] && { echo "Usage: casky run <category> [--agent claude|gemini|copilot|custom] [--agent-cmd \"<binary>\"] [--live-target <host|url> --i-have-authorization]"; exit 1; }
 
-    CONTAINER="${SKILL_LAB_NAME:-skill-lab}"
+    if [[ -n "$LIVE_TARGET" && "$I_HAVE_AUTHORIZATION" != true ]]; then
+      echo "--live-target requires --i-have-authorization." >&2
+      echo "Live-target mode runs real security tools against a real system with real internet" >&2
+      echo "egress (skill-live, not the sandboxed skill-lab). Only use this against" >&2
+      echo "infrastructure you have explicit authorization to test — see SECURITY.md." >&2
+      echo "" >&2
+      echo "Usage: casky run $CATEGORY --live-target $LIVE_TARGET --i-have-authorization" >&2
+      exit 1
+    fi
+
+    if [[ -n "$LIVE_TARGET" ]]; then
+      CONTAINER="${SKILL_LIVE_NAME:-skill-live}"
+    else
+      CONTAINER="${SKILL_LAB_NAME:-skill-lab}"
+    fi
 
     # Read the skill prompt from stdin (user pastes SKILL.md from the registry).
     #
@@ -85,13 +108,34 @@ No findings? Use empty array: \`{\"findings\":[],\"summary\":\"No issues found\"
 "
     fi
 
-    PROMPT="${SKILL_PROMPT}
+    if [[ -n "$LIVE_TARGET" ]]; then
+      echo "[casky] ================================================================" >&2
+      echo "[casky] LIVE TARGET MODE — tools will run against a REAL system: $LIVE_TARGET" >&2
+      echo "[casky] You confirmed authorization via --i-have-authorization." >&2
+      echo "[casky] Never run this against infrastructure you don't have explicit" >&2
+      echo "[casky] authorization to test — unauthorized scanning may be illegal." >&2
+      echo "[casky] ================================================================" >&2
+      ENV_SECTION="You are investigating a REAL, live target — not a disposable practice lab.
+The operator has confirmed explicit authorization to test it. Stay strictly within scope:
+only interact with ${LIVE_TARGET}, never pivot to or scan any other host, domain, or IP you
+discover along the way without the operator explicitly telling you to.
 
----
+- **Skill container** (${CONTAINER}): image ghcr.io/casky-ai/skills/${CATEGORY} — your security tools,
+  with real internet/DNS egress (this is skill-live, not the sandboxed skill-lab).
+- **Live target**: ${LIVE_TARGET} — a container name (reachable if the operator ran
+  \`docker network connect <network> skill-live\` beforehand), a hostname/IP, or a full URL/API
+  endpoint. Use it exactly as given below — don't assume it resolves via a fixed alias like
+  the lab's \"target\" hostname.
 
-## Your environment
+Run every tool command through the skill container:
+  docker exec ${CONTAINER} <command>
 
-Two containers are running on the casky-lab Docker network:
+Examples (substitute the literal value \"${LIVE_TARGET}\" for the target):
+  docker exec ${CONTAINER} nmap -sV ${LIVE_TARGET}
+  docker exec ${CONTAINER} curl -s ${LIVE_TARGET}
+  docker exec ${CONTAINER} bash -c 'cat /results/output.txt'"
+    else
+      ENV_SECTION="Two containers are running on the casky-lab Docker network:
 
 - **Skill container** (${CONTAINER}): image ghcr.io/casky-ai/skills/${CATEGORY} — your security tools
 - **Target container** (target): the vulnerable application you will attack
@@ -102,7 +146,16 @@ Run every tool command through the skill container:
 Examples:
   docker exec ${CONTAINER} nmap -sV target
   docker exec ${CONTAINER} curl -s http://target
-  docker exec ${CONTAINER} bash -c 'cat /results/output.txt'
+  docker exec ${CONTAINER} bash -c 'cat /results/output.txt'"
+    fi
+
+    PROMPT="${SKILL_PROMPT}
+
+---
+
+## Your environment
+
+${ENV_SECTION}
 
 The skills library (every skill's full documentation, read-only) is mounted at
 /opt/skills-library inside ${CONTAINER} — NOT /skills. If you want to check another
@@ -284,6 +337,9 @@ Do NOT enter either container interactively.${REPORT_SECTION}"
     echo "      (web-app, forensics, network, …). Paste the SKILL.md prompt on stdin."
     echo "      --agent custom requires --agent-cmd \"<binary>\", a command that reads the"
     echo "      prompt from stdin (e.g. --agent custom --agent-cmd \"my-agent-cli\")."
+    echo "      --live-target <host|url> --i-have-authorization runs against a REAL,"
+    echo "      authorized target via skill-live (real internet egress) instead of the"
+    echo "      sandboxed skill-lab — see README's live-target section and SECURITY.md."
     echo ""
     echo "  casky verify <category>"
     echo "      Check the skill container has all required tools for <category>."
@@ -317,6 +373,7 @@ Do NOT enter either container interactively.${REPORT_SECTION}"
     echo "  GOOGLE_API_KEY         for Gemini CLI (optional)"
     echo "  GITHUB_TOKEN           for GitHub Copilot CLI, --agent copilot (optional)"
     echo "  SKILL_LAB_NAME         skill container name (default: skill-lab)"
+    echo "  SKILL_LIVE_NAME        live-target skill container name (default: skill-live)"
     echo "  CASKY_RUN_ID           single-run platform link (optional, for casky run)"
     echo "  CASKY_TOKEN            single-run sandbox JWT (optional, for casky run)"
     echo "  DATABASE_URL           Postgres connection string — enables casky_db persistence"
