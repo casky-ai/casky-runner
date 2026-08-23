@@ -54,6 +54,20 @@ casky_pipeline/
 All four adapters above are wired into the fan-out in `harness.py`'s `generate_local_plan()` — none
 of this is aspirational or pending integration.
 
+### `LocalSkillsLibrary` (in `harness.py`) — leveraging each skill's full artifact set
+
+Not just `SKILL.md`. `get_executable_script(slug)` resolves `scripts/agent.py` or `scripts/process.py`
+(agent.py wins when both exist — every skill has at least one of the two), `get_reference_files(slug)`
+returns whatever `references/*.md` a skill ships (no fixed filename set), `get_report_template(slug)`
+resolves `assets/template.md` when present. `assemble_prompt(plan, step)` injects all three into the
+step prompt when they exist for that step's skill — additive to `skill_document`, never a replacement,
+and silently skipped when absent (not every skill ships every artifact). `symlink_for_native_loading(slug)`
+additionally symlinks the skill into `~/.claude/skills/<slug>/` right before `AgentWorker.execute()`
+spawns `casky run`, so `claude --print` discovers it as a first-class Skill — best-effort, never
+raises, since the prompt-injected guidance already works without it. See README's "How the agent uses
+a skill" for the user-facing explanation of why (steering, not enforcement — matches how the upstream
+skills library's own Black Hat Arsenal deployment uses it).
+
 ## BYO configuration (env vars)
 
 **Agent CLI selection** (`casky run <category> --agent <name>`, dispatched in `casky.sh`):
