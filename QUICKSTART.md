@@ -394,6 +394,21 @@ docker exec skill-lab which tshark tcpdump masscan   # confirm the right tools l
 docker exec -it casky-runner casky run network
 ```
 
+### Scenario 7: Live, authorized real-target investigation
+
+Only against infrastructure you have explicit authorization to test — see
+[`SECURITY.md`](SECURITY.md).
+
+```bash
+make live LIVE_TARGET=https://staging.example.com AUTHORIZED=yes SKILL=web-app AGENT=claude
+```
+
+Both `AUTHORIZED=yes` and `--i-have-authorization` (passed through automatically by `make live`)
+are required every time — omit either and it refuses to run. You'll see a `[casky] LIVE TARGET
+MODE` banner confirming the target before anything executes. `LIVE_TARGET` can also be an existing
+container's name if you first run `docker network connect <its-network> skill-live` so `skill-live`
+can actually reach it.
+
 ---
 
 ## Troubleshooting
