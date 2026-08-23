@@ -181,6 +181,14 @@ services:
     container_name: skill-lab
     restart: unless-stopped
     command: sleep infinity
+    # Race, found while checking parity with a fix in the sibling repo: without
+    # this, skill-lab can start and be execed into before casky-skills finishes
+    # populating the shared volume (a one-shot init container, not otherwise
+    # ordered), landing an empty /opt/skills-library on first use. runner
+    # already has this same dependency (below) — skill-lab/skill-live never did.
+    depends_on:
+      casky-skills:
+        condition: service_completed_successfully
     volumes:
       - casky-skills-data:/opt/skills-library:ro   # skills library (read-only) for agent.py scripts
     # casky-lab ONLY — casky-internal used to also be attached here ("reach runner's report
@@ -216,6 +224,9 @@ services:
     container_name: skill-live
     restart: unless-stopped
     command: sleep infinity
+    depends_on:
+      casky-skills:
+        condition: service_completed_successfully
     volumes:
       - casky-skills-data:/opt/skills-library:ro   # skills library (read-only) for agent.py scripts
     networks:
