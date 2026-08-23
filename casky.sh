@@ -157,10 +157,22 @@ Examples:
 
 ${ENV_SECTION}
 
-The skills library (every skill's full documentation, read-only) is mounted at
-/opt/skills-library inside ${CONTAINER} — NOT /skills. If you want to check another
-skill's documented commands or technique coverage, read it from there, e.g.:
+The skills library (all 753+ skills — documentation AND runnable code, read-only) is mounted
+at /opt/skills-library inside ${CONTAINER} — NOT /skills. Each skill has two things at
+/opt/skills-library/skills/<skill-slug>/:
+  SKILL.md            — the narrative playbook (when to use it, workflow, key concepts)
+  scripts/agent.py     — a self-contained Python implementation of the technique (stdlib +
+                         common libs only, e.g. requests — no extra install needed)
+
+Prefer running a skill's own agent.py over improvising your own exploitation code by hand —
+it's tested, known-working code, not something you have to write from scratch. Check its
+--help first, since arguments vary per skill:
   docker exec ${CONTAINER} cat /opt/skills-library/skills/<skill-slug>/SKILL.md
+  docker exec ${CONTAINER} python3 /opt/skills-library/skills/<skill-slug>/scripts/agent.py --help
+  docker exec ${CONTAINER} python3 /opt/skills-library/skills/<skill-slug>/scripts/agent.py <args>
+
+Not every skill's SKILL.md happens to mention its own agent.py in its narrative — check for one
+regardless before falling back to raw CLI tools or hand-written scripts.
 
 Do NOT enter either container interactively.${REPORT_SECTION}"
 
