@@ -183,9 +183,17 @@ services:
     command: sleep infinity
     volumes:
       - casky-skills-data:/opt/skills-library:ro   # skills library (read-only) for agent.py scripts
+    # casky-lab ONLY — casky-internal used to also be attached here ("reach runner's report
+    # server on localhost"), but nothing actually does that: report submission
+    # (casky.sh's REPORT_SECTION curl) runs from the agent's own shell inside casky-runner,
+    # not via `docker exec skill-lab curl ...`, and nothing in skill-lab's Dockerfile or the
+    # skills library calls out to casky-internal either (confirmed via repo-wide grep). That
+    # membership silently defeated this container's own "no internet access" guarantee below
+    # — Docker doesn't restrict egress per-network on a multi-homed container, so having ANY
+    # attached network with a real gateway (casky-internal is a plain, non-internal bridge)
+    # gave skill-lab real internet access despite casky-lab's `internal: true`. Removed.
     networks:
-      - casky-lab       # Isolated from internet for security scanning
-      - casky-internal  # Can reach runner's report server on localhost
+      - casky-lab       # Isolated from internet for security scanning (internal: true, below)
     # No internet access for the skill container — it scans the target only
     dns: []
 
