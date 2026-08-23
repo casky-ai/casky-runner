@@ -881,6 +881,23 @@ def assemble_prompt(plan: Plan, step: Step) -> str:
         parts.append(step.skill_document)
         parts.append("\n---\n")
 
+    # casky.sh's own ENV_SECTION already tells the agent that every skill under
+    # /opt/skills-library/skills/<slug>/scripts/agent.py is a tested, self-contained
+    # implementation to prefer over hand-written commands — but it only knows the
+    # broad category (e.g. "web-app"), not which of the 753 skills this specific step
+    # is. Since this step's exact skill_slug IS known here, surface the concrete path
+    # up front instead of leaving the agent to guess it from a <skill-slug> placeholder.
+    # get_agent_script() only builds the path (doesn't require the file to exist) — see
+    # LocalSkillsLibrary; existence is checked here since not every skill ships one.
+    agent_script = LocalSkillsLibrary().get_agent_script(step.skill_slug)
+    if agent_script.exists():
+        parts.append(
+            f"## This skill's own implementation\n\n"
+            f"docker exec <skill-container> python3 {agent_script} --help\n\n"
+            f"Prefer running this over improvising your own exploitation code — it's tested, "
+            f"known-working code for exactly this technique.\n\n---\n"
+        )
+
     parts.append("## Evidence for this investigation\n")
     parts.append(plan.evidence_text or "(no evidence provided)")
     parts.append("\n")
