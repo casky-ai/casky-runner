@@ -126,7 +126,9 @@ def test_generate_local_plan_end_to_end(isolated_config, canned_pipeline):
     assert step.status == "pending"
 
     # (a) on-disk investigation_steps JSON shape is unchanged from the
-    # pre-Phase-1 contract (harness.py:483-520 in the original numbering).
+    # pre-Phase-1 contract (harness.py:483-520 in the original numbering),
+    # plus "manual_output" — added for the resumable manual-investigation
+    # flow (run_interactive_investigation / _persist_step_capture).
     plan_file = isolated_config.plans_dir / f"{plan.id}.json"
     assert plan_file.exists()
     on_disk = json.loads(plan_file.read_text())
@@ -140,7 +142,9 @@ def test_generate_local_plan_end_to_end(isolated_config, canned_pipeline):
     assert set(step_json.keys()) == {
         "id", "skill_slug", "skill_category", "skill_document", "technique_id",
         "technique_name", "rationale", "evidence_focus", "step_order", "status",
+        "manual_output",
     }
+    assert step_json["manual_output"] == ""
     assert step_json["skill_slug"] == "web-app-recon-basics"
 
     # (b) PlatformClient._parse_plan can still round-trip the written file.
