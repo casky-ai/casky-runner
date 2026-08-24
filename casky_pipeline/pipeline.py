@@ -109,18 +109,81 @@ def _repair_evidence_anchor_bare_kv_pairs(text: str) -> str:
     return "".join(out)
 
 
+def _salvage_truncated_json(text: str) -> dict | None:
+    """Best-effort recovery for a response that was cut off mid-JSON — hit
+    max_tokens partway through writing an array element (live-caught: SkillSelector
+    truncating mid-"technique_name" string on its 3rd/4th selection) — the shape
+    neither of _parse_json_response's other two repairs address, since there's no
+    malformed-but-complete JSON to fix here, just a document that stops partway
+    through. Without this, one incomplete trailing element wiped out every
+    complete selection that came before it, turning "3 validated techniques"
+    into "0 investigation steps."
+
+    Walks the text tracking bracket/brace/string state (backslash-escape aware)
+    and remembers the last position where a nested structure ({ or [) just
+    closed while something is still open above it — i.e. the last point a
+    complete array element finished — along with what was still open *at that
+    point* (not the final, more-deeply-nested stack once the incomplete
+    trailing element started opening its own brackets). Truncates there and
+    closes whatever was open at that point. Returns None (never raises) if no
+    such point exists — e.g. the very first element never completed, or the
+    text wasn't JSON at all — leaving the caller to raise the *original*
+    JSONDecodeError instead of masking a genuinely broken response as an
+    empty-but-valid one.
+
+    Deliberately drops the trailing, incomplete element rather than trying to
+    complete it — completing a half-written string/rationale would be
+    fabricating model output, not recovering it."""
+    stack: list[str] = []
+    in_string = False
+    escape = False
+    last_safe = -1
+    last_safe_stack: list[str] = []
+    for i, ch in enumerate(text):
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+            continue
+        if ch in "{[":
+            stack.append(ch)
+            continue
+        if ch in "}]":
+            if not stack:
+                return None  # malformed from the start — not a truncation
+            stack.pop()
+            if stack:
+                last_safe = i + 1
+                last_safe_stack = list(stack)
+    if last_safe <= 0 or not stack:
+        return None  # nothing complete to salvage, or text wasn't truncated
+    closing = "".join("}" if c == "{" else "]" for c in reversed(last_safe_stack))
+    try:
+        return json.loads(text[:last_safe] + closing)
+    except json.JSONDecodeError:
+        return None
+
+
 def _parse_json_response(raw: str) -> dict:
     """Shared parse path for every pipeline stage's raw LLM response. Strips code
-    fences, then — only on a first parse failure — tries two independent recoveries
-    before giving up: the bare-kv-pair repair (see
-    _repair_evidence_anchor_bare_kv_pairs), and json.JSONDecoder().raw_decode(),
-    which recovers from a *different*, separately live-caught failure mode: the
-    model appending trailing content (duplicate JSON, stray commentary) after an
-    otherwise complete, valid JSON object — a plain json.loads() rejects the whole
-    response as "Extra data" even though the actual JSON value is perfectly fine.
-    raw_decode() parses only the first complete value and ignores what follows.
-    Re-raises the *original* JSONDecodeError, not a recovery attempt's, if all fail,
-    so callers' error logging still reflects the model's real raw output."""
+    fences, then — only on a first parse failure — tries three independent
+    recoveries before giving up: the bare-kv-pair repair (see
+    _repair_evidence_anchor_bare_kv_pairs), json.JSONDecoder().raw_decode(), which
+    recovers from a *different*, separately live-caught failure mode (the model
+    appending trailing content after an otherwise complete, valid JSON object — a
+    plain json.loads() rejects the whole response as "Extra data" even though the
+    actual JSON value is perfectly fine; raw_decode() parses only the first
+    complete value and ignores what follows), and _salvage_truncated_json, for a
+    response cut off mid-element (a max_tokens cutoff) — see that function's
+    docstring. Re-raises the *original* JSONDecodeError, not a recovery attempt's,
+    if all fail, so callers' error logging still reflects the model's real raw
+    output."""
     stripped = _strip_code_fences(raw)
     try:
         return json.loads(stripped)
@@ -136,6 +199,9 @@ def _parse_json_response(raw: str) -> dict:
                 return obj
             except json.JSONDecodeError:
                 pass
+        salvaged = _salvage_truncated_json(stripped)
+        if salvaged is not None:
+            return salvaged
         raise exc from None
 
 
@@ -415,8 +481,16 @@ Respond with ONLY a JSON object — no prose, no markdown code fences — exactl
         user_prompt = self._build_user_prompt(input, validated, candidate_index)
         # Directly observed truncating mid-JSON at the 2048 default on real evidence
         # with 3+ validated techniques (multiple selections × rationale/evidence_focus/
-        # evidence_anchors per selection adds up fast) — 4096 is the fix, not a guess.
-        raw = await provider.complete(self.SYSTEM_PROMPT, user_prompt, max_tokens=4096, cacheable_system=True)
+        # evidence_anchors per selection adds up fast) — bumped to 4096, then
+        # live-caught truncating *again* at 4096 on a 3-technique network-scan
+        # investigation (cut off mid-string at char 14147, ~line 216 of the raw
+        # response) — evidence_anchors are carried forward verbatim per selection,
+        # so cost scales with techniques × selections × anchor text, not just
+        # technique count. 6144 is the new empirical floor; _salvage_truncated_json
+        # in _parse_json_response is the actual backstop if a response ever
+        # outgrows this again — it recovers whatever selections completed instead
+        # of discarding the whole response.
+        raw = await provider.complete(self.SYSTEM_PROMPT, user_prompt, max_tokens=6144, cacheable_system=True)
         try:
             data = _parse_json_response(raw)
             valid_slugs = {
