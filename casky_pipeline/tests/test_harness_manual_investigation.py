@@ -48,6 +48,13 @@ def _plan(**overrides) -> "harness.Plan":
     return harness.Plan(**base)
 
 
+def _point_at_library(tmp_path: Path, monkeypatch) -> Path:
+    lib = tmp_path / "skills-library"
+    lib.mkdir()
+    monkeypatch.setattr(harness.config, "skills_library_path", lib)
+    return lib
+
+
 @pytest.fixture
 def isolated_config(monkeypatch):
     monkeypatch.setattr(harness.config, "database_url", "")
@@ -100,6 +107,61 @@ def test_capture_step_paste_handles_eof_without_end_sentinel(fake_input):
     text, skipped = harness._capture_step_paste(1, 1)
     assert text == "partial output"
     assert skipped is False
+
+
+# ── _print_step_guidance ─────────────────────────────────────────────────────
+#
+# Live-caught by direct user confusion: the manual flow only ever printed
+# generic per-category fallback commands ("ip addr show", "netstat ...") with
+# no mention that a tested, purpose-built scripts/agent.py exists for the
+# selected skill at all — this had fallen behind casky.sh's --auto-mode
+# PROMPT text, which has said "prefer running a skill's own script over
+# improvising" since the agent.py-leverage work earlier this branch.
+
+def test_print_step_guidance_points_at_the_skills_own_script(tmp_path, monkeypatch, capsys):
+    lib = _point_at_library(tmp_path, monkeypatch)
+    scripts = lib / "skills" / "detecting-network-scanning-with-ids-signatures" / "scripts"
+    scripts.mkdir(parents=True)
+    (scripts / "agent.py").write_text("# stub\n")
+
+    harness._print_step_guidance(_step())
+
+    # Rich's Console soft-wraps long lines at terminal width, so a long
+    # absolute path can be split across lines in the captured output —
+    # check for the distinctive, short pieces rather than one exact
+    # contiguous substring.
+    out = capsys.readouterr().out
+    assert "scripts/agent.py" in out.replace("\n", "")
+    assert "preferred" in out.lower()
+
+
+def test_print_step_guidance_mentions_references_and_template_when_present(tmp_path, monkeypatch, capsys):
+    lib = _point_at_library(tmp_path, monkeypatch)
+    slug_dir = lib / "skills" / "detecting-network-scanning-with-ids-signatures"
+    (slug_dir / "scripts").mkdir(parents=True)
+    (slug_dir / "scripts" / "agent.py").write_text("# stub\n")
+    (slug_dir / "references").mkdir()
+    (slug_dir / "references" / "standards.md").write_text("# standards\n")
+    (slug_dir / "assets").mkdir()
+    (slug_dir / "assets" / "template.md").write_text("# template\n")
+
+    harness._print_step_guidance(_step())
+
+    out = capsys.readouterr().out.replace("\n", "")
+    assert "standards.md" in out
+    assert "assets/template.md" in out
+
+
+def test_print_step_guidance_falls_back_cleanly_with_no_resolvable_script(tmp_path, monkeypatch, capsys):
+    """No scripts/ directory at all for this slug — must not crash, and must
+    fall back to the same generic guidance the flow always had."""
+    _point_at_library(tmp_path, monkeypatch)
+
+    harness._print_step_guidance(_step())
+
+    out = capsys.readouterr().out
+    assert "Run in skill-lab:" in out
+    assert "preferred" not in out.lower()
 
 
 # ── _persist_step_capture ────────────────────────────────────────────────────

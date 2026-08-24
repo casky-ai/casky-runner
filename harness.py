@@ -1840,6 +1840,15 @@ def _print_step_guidance(step: Step) -> None:
     run_interactive_investigation can interleave it with the actual paste
     prompt per step instead of dumping the whole runbook up front.
 
+    Prefers pointing the human at the skill's own scripts/agent.py (or
+    process.py) over the generic-tool-command fallback — this manual flow had
+    fallen behind casky.sh's --auto-mode PROMPT text, which has said "prefer
+    running a skill's own script over improvising" since the agent.py-
+    leverage work earlier this branch; this function was never updated to
+    match, so a human running a step manually saw only `ip addr show` /
+    `netstat` (the generic per-category fallback) with no mention that a
+    tested, purpose-built script for this exact technique exists at all.
+
     step.technique_name / .rationale / .evidence_focus are LLM-generated free
     text, and cmd below comes from a third-party skill doc corpus we don't
     control — any of these can contain a literal '[' that Rich's markup parser
@@ -1851,7 +1860,29 @@ def _print_step_guidance(step: Step) -> None:
     if step.rationale:
         console.print(f"[dim]Goal:[/dim] {rmarkup(step.rationale)}")
 
-    console.print("\n[bold]Run in skill-lab:[/bold]")
+    # No .available gate here (unlike generate_local_plan's use of it) —
+    # get_executable_script() only depends on the skill's own scripts/
+    # directory existing, not on index.json (assemble_prompt follows the
+    # same pattern for the --auto-mode path).
+    library = LocalSkillsLibrary()
+    script = library.get_executable_script(step.skill_slug)
+    if script:
+        # Container-local path — resolved against config.skills_library_path
+        # (this container's mount point), but skill-lab/skill-live mount the
+        # exact same shared volume at the exact same path (docker-compose.yml),
+        # so this path is directly runnable there as printed.
+        console.print(f"\n[bold]Run this skill's own script in skill-lab (preferred):[/bold]")
+        console.print(f"  [cyan]python3 {script} --help[/cyan]   [dim]# check its arguments first[/dim]")
+        refs = library.get_reference_files(step.skill_slug)
+        if refs:
+            names = ", ".join(r.name for r in refs)
+            console.print(f"[dim]Reference material:[/dim] {script.parent.parent / 'references'} ({names})")
+        template = library.get_report_template(step.skill_slug)
+        if template:
+            console.print(f"[dim]Report template:[/dim] {template}")
+        console.print("\n[dim]If a raw command is a better fit for this step:[/dim]")
+    else:
+        console.print("\n[bold]Run in skill-lab:[/bold]")
 
     commands = _extract_commands_from_skill_doc(step.skill_document)
     if not commands:
