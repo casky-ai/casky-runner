@@ -19,44 +19,59 @@ shift || true
 case "$COMMAND" in
 
   run)
-    # casky run <skill-category> [--agent claude|gemini] [--live-target <host|url> --i-have-authorization]
+    # casky run <skill-category> [--agent claude|gemini] [--live-target <host|url> --i-have-authorization [--i-have-network-access]]
     #
     # <skill-category> is one of the 18 skill image categories (web-app, forensics, …).
     # The actual skill prompt (from the 753-skill registry) is read from stdin —
     # paste the SKILL.md content, then press Ctrl+D.
     #
-    # --live-target switches from the sandboxed lab (skill-lab, no internet egress) to
-    # skill-live (real internet egress, see docker-compose.yml) — only for a real,
-    # authorized target. Requires --i-have-authorization every time; see README's
-    # "Live, authorized real-target investigations" section and SECURITY.md.
+    # --live-target names a REAL, authorized target — a host/URL, or a cloud
+    # account/resource identifier the target isn't directly reachable at all
+    # (the common case for a self-hosted customer: their AWS/Azure resources
+    # sit behind their own VPC/subscription boundary, not this container's).
+    # Requires --i-have-authorization every time; see README's "Live,
+    # authorized real-target investigations" section and SECURITY.md.
+    #
+    # By default this produces a RUNBOOK (advisory mode): the agent consults
+    # the skill's own materials and hands back the exact commands a human
+    # should run themselves, with their own credentials — no execution
+    # against the target, runs in the sandboxed skill-lab container, no real
+    # egress needed. Add --i-have-network-access to opt into direct
+    # execution instead (skill-live, real internet/DNS egress, tools run
+    # for real against the target) — only when this container genuinely has
+    # network reachability to it.
     CATEGORY="${1:-}"; shift || true
     AGENT="claude"
     AGENT_CMD=""
     LIVE_TARGET=""
     I_HAVE_AUTHORIZATION=false
+    I_HAVE_NETWORK_ACCESS=false
     while [[ $# -gt 0 ]]; do
       case "$1" in
         --agent) AGENT="$2"; shift 2 ;;
         --agent-cmd) AGENT_CMD="$2"; shift 2 ;;
         --live-target) LIVE_TARGET="$2"; shift 2 ;;
         --i-have-authorization) I_HAVE_AUTHORIZATION=true; shift ;;
+        --i-have-network-access) I_HAVE_NETWORK_ACCESS=true; shift ;;
         *) shift ;;
       esac
     done
 
-    [[ -z "$CATEGORY" ]] && { echo "Usage: casky run <category> [--agent claude|gemini|copilot|custom] [--agent-cmd \"<binary>\"] [--live-target <host|url> --i-have-authorization]"; exit 1; }
+    [[ -z "$CATEGORY" ]] && { echo "Usage: casky run <category> [--agent claude|gemini|copilot|custom] [--agent-cmd \"<binary>\"] [--live-target <host|url> --i-have-authorization [--i-have-network-access]]"; exit 1; }
 
     if [[ -n "$LIVE_TARGET" && "$I_HAVE_AUTHORIZATION" != true ]]; then
       echo "--live-target requires --i-have-authorization." >&2
-      echo "Live-target mode runs real security tools against a real system with real internet" >&2
-      echo "egress (skill-live, not the sandboxed skill-lab). Only use this against" >&2
-      echo "infrastructure you have explicit authorization to test — see SECURITY.md." >&2
+      echo "Live-target mode investigates a real system — by default it produces a runbook" >&2
+      echo "of commands for a human to run (add --i-have-network-access for this container" >&2
+      echo "to execute tools directly instead, over skill-live's real internet egress)." >&2
+      echo "Only use this against infrastructure you have explicit authorization to test —" >&2
+      echo "see SECURITY.md." >&2
       echo "" >&2
       echo "Usage: casky run $CATEGORY --live-target $LIVE_TARGET --i-have-authorization" >&2
       exit 1
     fi
 
-    if [[ -n "$LIVE_TARGET" ]]; then
+    if [[ -n "$LIVE_TARGET" && "$I_HAVE_NETWORK_ACCESS" == true ]]; then
       CONTAINER="${SKILL_LIVE_NAME:-skill-live}"
     else
       CONTAINER="${SKILL_LAB_NAME:-skill-lab}"
@@ -108,10 +123,11 @@ No findings? Use empty array: \`{\"findings\":[],\"summary\":\"No issues found\"
 "
     fi
 
-    if [[ -n "$LIVE_TARGET" ]]; then
+    if [[ -n "$LIVE_TARGET" && "$I_HAVE_NETWORK_ACCESS" == true ]]; then
       echo "[casky] ================================================================" >&2
       echo "[casky] LIVE TARGET MODE — tools will run against a REAL system: $LIVE_TARGET" >&2
-      echo "[casky] You confirmed authorization via --i-have-authorization." >&2
+      echo "[casky] You confirmed authorization via --i-have-authorization and network" >&2
+      echo "[casky] access via --i-have-network-access." >&2
       echo "[casky] Never run this against infrastructure you don't have explicit" >&2
       echo "[casky] authorization to test — unauthorized scanning may be illegal." >&2
       echo "[casky] ================================================================" >&2
@@ -134,6 +150,46 @@ Examples (substitute the literal value \"${LIVE_TARGET}\" for the target):
   docker exec ${CONTAINER} nmap -sV ${LIVE_TARGET}
   docker exec ${CONTAINER} curl -s ${LIVE_TARGET}
   docker exec ${CONTAINER} bash -c 'cat /results/output.txt'"
+    elif [[ -n "$LIVE_TARGET" ]]; then
+      echo "[casky] ================================================================" >&2
+      echo "[casky] LIVE TARGET ADVISORY MODE — producing a RUNBOOK for a REAL system:" >&2
+      echo "[casky] $LIVE_TARGET — no commands will be executed against it." >&2
+      echo "[casky] You confirmed authorization via --i-have-authorization." >&2
+      echo "[casky] (Pass --i-have-network-access too if this container can actually" >&2
+      echo "[casky] reach the target and you want direct execution instead.)" >&2
+      echo "[casky] Never target infrastructure you don't have explicit authorization" >&2
+      echo "[casky] to investigate, even in advisory/runbook form." >&2
+      echo "[casky] ================================================================" >&2
+      ENV_SECTION="You are producing an investigation RUNBOOK for a REAL, authorized target —
+you are NOT executing anything against it. This container (${CONTAINER}) has no network
+reachability to ${LIVE_TARGET} — do not attempt \`docker exec ${CONTAINER} curl/nmap/etc
+${LIVE_TARGET}\`, it will not work and is not the goal here.
+
+- **Skill container** (${CONTAINER}): image ghcr.io/casky-ai/skills/${CATEGORY} — your security
+  tools and this skill's own reference material, for LOCAL inspection only.
+- **Live target**: ${LIVE_TARGET} — a hostname/URL/API endpoint, or a cloud account/resource
+  identifier (e.g. an AWS account ID or Azure subscription ID) the operator wants investigated.
+  It may not even be network-reachable in the URL sense — treat it as the subject the runbook's
+  commands should target, not necessarily something you can resolve or connect to.
+
+Your job: read the evidence above, then consult this skill's own methodology — its SKILL.md,
+references/*.md, and scripts/agent.py --help, all inside ${CONTAINER} — and produce a Markdown
+runbook of the exact commands a human analyst should run themselves, in their own environment,
+with their own properly-scoped credentials (an AWS/Azure CLI invocation, a REST API call with
+method + endpoint + body, etc. — whatever this skill's own methodology calls for). For each
+command give: the exact command, a one-line rationale (why this command, what it checks), and
+the output/signal to look for and what it would mean. Order commands from least to most
+invasive/sensitive.
+
+Consulting the skill's own materials is real local activity against ${CONTAINER} (not the
+target) — do this before writing the runbook, don't invent commands from memory:
+  docker exec ${CONTAINER} cat /opt/skills-library/skills/<skill-slug>/SKILL.md
+  docker exec ${CONTAINER} ls /opt/skills-library/skills/<skill-slug>/references/ 2>/dev/null
+  docker exec ${CONTAINER} python3 /opt/skills-library/skills/<skill-slug>/scripts/agent.py --help \
+    || docker exec ${CONTAINER} python3 /opt/skills-library/skills/<skill-slug>/scripts/process.py --help
+
+End the runbook with: \"Run these yourself with your own scoped credentials, save the output,
+then run \`casky harness -i <output-file>\` to continue this investigation.\""
     else
       ENV_SECTION="Two containers are running on the casky-lab Docker network:
 
@@ -393,9 +449,11 @@ Do NOT enter either container interactively.${REPORT_SECTION}"
     echo "      (web-app, forensics, network, …). Paste the SKILL.md prompt on stdin."
     echo "      --agent custom requires --agent-cmd \"<binary>\", a command that reads the"
     echo "      prompt from stdin (e.g. --agent custom --agent-cmd \"my-agent-cli\")."
-    echo "      --live-target <host|url> --i-have-authorization runs against a REAL,"
-    echo "      authorized target via skill-live (real internet egress) instead of the"
-    echo "      sandboxed skill-lab — see README's live-target section and SECURITY.md."
+    echo "      --live-target <host|url> --i-have-authorization investigates a REAL,"
+    echo "      authorized target: by default produces a runbook (commands for a human to"
+    echo "      run themselves, no execution) — add --i-have-network-access to have this"
+    echo "      container execute tools directly instead, over skill-live's real internet"
+    echo "      egress. See README's live-target section and SECURITY.md."
     echo ""
     echo "  casky verify <category>"
     echo "      Check the skill container has all required tools for <category>."
@@ -429,7 +487,8 @@ Do NOT enter either container interactively.${REPORT_SECTION}"
     echo "  GOOGLE_API_KEY         for Gemini CLI (optional)"
     echo "  GITHUB_TOKEN           for GitHub Copilot CLI, --agent copilot (optional)"
     echo "  SKILL_LAB_NAME         skill container name (default: skill-lab)"
-    echo "  SKILL_LIVE_NAME        live-target skill container name (default: skill-live)"
+    echo "  SKILL_LIVE_NAME        live-target skill container name, used only with"
+    echo "                         --i-have-network-access (default: skill-live)"
     echo "  CASKY_RUN_ID           single-run platform link (optional, for casky run)"
     echo "  CASKY_TOKEN            single-run sandbox JWT (optional, for casky run)"
     echo "  DATABASE_URL           Postgres connection string — enables casky_db persistence"
