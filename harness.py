@@ -813,24 +813,27 @@ class _ReportHandler(BaseHTTPRequestHandler):
             # these files remain useful, human-inspectable transparency
             # artifacts regardless of Postgres availability, same reasoning
             # as generate_consolidated_report()'s REPORT.md/consolidated.json.
-            reports_dir = Path("/var/casky/reports") / _local_plan_id
+            reports_dir = _LOCAL_REPORTS_DIR / _local_plan_id
             reports_dir.mkdir(parents=True, exist_ok=True)
             (reports_dir / f"{run_id}.json").write_text(json.dumps(data, indent=2))
 
-            # Additive Postgres persistence (Part B). NOTE: no
-            # store.record_skill_execution() call here — this bare HTTP
-            # handler has no closure over AgentWorker/AgentResult, so it
-            # genuinely has no step_id, agent_used, model_used, exit_code, or
-            # start/end timestamps to record; inventing placeholder values
-            # for those would be worse than omitting the row. Findings are
-            # linked to the investigation directly, with skill_execution_id
-            # left NULL, rather than fabricated execution metadata.
+            # Additive Postgres persistence (Part B). This bare HTTP handler
+            # has no closure over AgentWorker/AgentResult, so it genuinely
+            # has no step_id/agent_used/model_used/exit_code/timestamps to
+            # record a skill_executions row itself — AgentWorker.execute()
+            # pre-creates that row (started_at set) *before* spawning this
+            # subprocess specifically so it already exists by the time this
+            # POST arrives mid-run. run_id here is that same row's primary
+            # key (it's literally the {run_id} path segment CASKY_RUN_ID was
+            # set to when AgentWorker built this subprocess's env), so
+            # findings link to their real execution instead of leaving
+            # skill_execution_id NULL.
             if config.database_url:
                 findings = data.get("findings", [])
                 if isinstance(findings, list) and findings:
                     try:
                         db_store.record_findings(
-                            _local_plan_id, None, findings, database_url=config.database_url
+                            _local_plan_id, run_id, findings, database_url=config.database_url
                         )
                     except db_store.DatabaseUnavailable as e:
                         console.print(
@@ -1145,6 +1148,51 @@ class AgentWorker:
             "CASKY_APP_URL": report_base_url,
         }
 
+        # Pre-create the skill_executions row *before* spawning the subprocess
+        # (not just after it finishes) — casky-ui's "Execution" tab reads
+        # investigation.skill_executions directly, and it was always empty
+        # for every --auto-mode run (live-caught by the user checking
+        # multiple real investigations): _ReportHandler.do_POST() — the
+        # bare HTTP handler receiving the agent's own report POST mid-run —
+        # explicitly never wrote one (see its comment: it "has no closure
+        # over AgentWorker/AgentResult", so it has no step_id/agent_used/
+        # exit_code/timestamps to record, and inventing placeholders would
+        # be worse than omitting the row). AgentWorker DOES have all of
+        # that. Creating the row now (started_at set, everything else still
+        # unknown) rather than only after proc.wait() also means it already
+        # exists by the time that mid-run POST arrives, so
+        # do_POST can link its findings to this exact execution instead of
+        # leaving skill_execution_id NULL — record_skill_execution's own
+        # ON CONFLICT (id) DO UPDATE makes the second call below a
+        # same-row update, not a duplicate insert.
+        started_at = datetime.now()
+        if config.database_url:
+            try:
+                db_store.record_skill_execution(
+                    investigation_id=plan.id,
+                    step_id=step.id,
+                    run_id=run_id,
+                    skill_slug=step.skill_slug,
+                    # No --agent flag is ever passed to the 'casky run' subprocess
+                    # below — casky.sh's own default (AGENT="claude") is what
+                    # actually runs, so this reflects reality, not a guess.
+                    # model_used is genuinely unknown from here: the Claude Code
+                    # CLI picks its own default model internally, unobserved by
+                    # this process — left None rather than fabricated.
+                    agent_used="claude",
+                    model_used=None,
+                    exit_code=None,
+                    started_at=started_at,
+                    completed_at=None,
+                    output=None,
+                    database_url=config.database_url,
+                )
+            except Exception as e:
+                console.print(
+                    f"[yellow]Could not record skill execution start to Postgres "
+                    f"({rmarkup(str(e))}) — continuing without it.[/yellow]"
+                )
+
         proc = await asyncio.create_subprocess_exec(
             "casky",
             "run",
@@ -1165,12 +1213,35 @@ class AgentWorker:
             output_lines.append(line)
 
         await proc.wait()
+        exit_code = proc.returncode or 0
+        output = "\n".join(output_lines)
+
+        if config.database_url:
+            try:
+                db_store.record_skill_execution(
+                    investigation_id=plan.id,
+                    step_id=step.id,
+                    run_id=run_id,
+                    skill_slug=step.skill_slug,
+                    agent_used="claude",
+                    model_used=None,
+                    exit_code=exit_code,
+                    started_at=started_at,
+                    completed_at=datetime.now(),
+                    output=output,
+                    database_url=config.database_url,
+                )
+            except Exception as e:
+                console.print(
+                    f"[yellow]Could not record skill execution result to Postgres "
+                    f"({rmarkup(str(e))}) — continuing without it.[/yellow]"
+                )
 
         return AgentResult(
             step=step,
             run_id=run_id,
-            exit_code=proc.returncode or 0,
-            output="\n".join(output_lines),
+            exit_code=exit_code,
+            output=output,
             report_url=f"{report_base_url}/api/runs/{run_id}/report",
         )
 
@@ -1215,7 +1286,7 @@ class CaskyHarness:
 # ── Consolidated report generator ─────────────────────────────────────────────
 
 def generate_consolidated_report(plan: Plan, results: list[Any]) -> Path:
-    reports_dir = Path("/var/casky/reports") / plan.id
+    reports_dir = _LOCAL_REPORTS_DIR / plan.id
     reports_dir.mkdir(parents=True, exist_ok=True)
 
     findings_all: list[dict] = []
