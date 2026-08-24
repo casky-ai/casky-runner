@@ -203,7 +203,21 @@ Do NOT enter either container interactively.${REPORT_SECTION}"
         # `casky-lab` network has no internet egress) and, for a real target,
         # the --i-have-authorization gate skill-live requires (see
         # SECURITY.md) — both already enforced before this code ever runs.
-        echo "$PROMPT" | claude --print --dangerously-skip-permissions
+        # CASKY_CAPTURE_TRANSCRIPT=1 (set only by harness.py's AgentWorker,
+        # never by a human running `casky run` interactively) switches to
+        # --output-format stream-json — a JSONL event log including every
+        # actual Bash tool_use block and its real tool_result, not just the
+        # agent's final narrated summary. harness.py parses this into a
+        # verifiable transcript (did the skill's own script actually run,
+        # with what real output) instead of taking the agent's self-report
+        # on faith. Left as plain text for the interactive case: raw JSONL
+        # dumped to a human's terminal would be unreadable, and nothing
+        # downstream of that path parses it.
+        if [[ "${CASKY_CAPTURE_TRANSCRIPT:-}" == "1" ]]; then
+          echo "$PROMPT" | claude --print --dangerously-skip-permissions --output-format stream-json --verbose
+        else
+          echo "$PROMPT" | claude --print --dangerously-skip-permissions
+        fi
         ;;
       gemini)
         [[ -z "${GOOGLE_API_KEY:-}" && -z "${GEMINI_API_KEY:-}" ]] && \
