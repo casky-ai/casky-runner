@@ -55,6 +55,7 @@ from casky_db import store as db_store
 from rich.console import Console
 from rich.layout import Layout
 from rich.live import Live
+from rich.markdown import Markdown
 from rich.markup import escape as rmarkup
 from rich.panel import Panel
 from rich.prompt import IntPrompt, Prompt
@@ -1763,6 +1764,11 @@ class HarnessUI:
 
         if report_path and report_path.exists():
             console.print(f"\n[green]Consolidated report:[/green] {report_path}")
+            console.print(Panel(
+                Markdown(report_path.read_text()),
+                title="Report",
+                border_style="cyan",
+            ))
         elif not config.is_local_mode:
             console.print(f"\n[green]View full report:[/green] {config.app_url}/investigations/{harness.plan.id}")
 
