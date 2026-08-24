@@ -87,10 +87,17 @@ CASKY_MODEL_PROVIDER=anthropic          # default — uses ANTHROPIC_API_KEY
 #                                                         # any vLLM server's /v1 URL
 # CASKY_MODEL_NAME=gpt-4o-mini
 # CASKY_MODEL_API_KEY=                                    # bearer token, if the endpoint needs one
+CASKY_MODEL_TEMPERATURE=0.0             # default — see below
 ```
 
 This is separate from `--agent` above — `--agent` picks which coding agent *executes* a step;
 `CASKY_MODEL_PROVIDER` picks which LLM *generates the plan itself*.
+
+`CASKY_MODEL_TEMPERATURE` defaults to `0.0` (not the API's own default of `1.0`) — every classifier
+stage is a classification/extraction task, not creative writing, so running the same evidence twice
+should reliably produce the same plan rather than a different set of validated MITRE techniques (and
+therefore a different set of selected skills) each time. Raise it if you actually want more
+exploratory variance across runs.
 
 ### BYO-DB — where investigations are stored
 
@@ -329,6 +336,7 @@ mount, and evidence size limits.
 | `GOOGLE_API_KEY` / `GEMINI_API_KEY` | Gemini CLI agent | Only if using `--agent gemini` |
 | `GITHUB_TOKEN` | GitHub Copilot CLI agent | Only if using `--agent copilot` |
 | `CASKY_MODEL_PROVIDER` / `CASKY_MODEL_BASE_URL` / `CASKY_MODEL_NAME` / `CASKY_MODEL_API_KEY` | BYO-LLM for the classifier pipeline | Optional — defaults to Anthropic |
+| `CASKY_MODEL_TEMPERATURE` | Sampling temperature for every classifier pipeline stage | Optional, default `0.0` (deterministic — see "BYO-LLM" above) |
 | `DATABASE_URL` | Point at your own Postgres instead of the bundled `db` service | Optional |
 | `CASKY_UI_ADMIN_PASSWORD` | Casky UI's single-admin login. Leave unset to auto-generate one on first boot (printed once to `docker compose logs ui`) | Optional |
 | `CASKY_UI_PORT` | Host port Casky UI is reachable on | Optional, default `8766` |

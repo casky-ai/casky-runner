@@ -87,6 +87,7 @@ skills library's own Black Hat Arsenal deployment uses it).
 | `CASKY_MODEL_BASE_URL` | Required when `openai_compatible` (OpenAI, Ollama, LM Studio, vLLM, …) | — |
 | `CASKY_MODEL_NAME` | Model id | `claude-haiku-4-5` (anthropic) / `gpt-4o-mini` (openai_compatible) |
 | `CASKY_MODEL_API_KEY` | Bearer token for `openai_compatible` backends that require one | — |
+| `CASKY_MODEL_TEMPERATURE` | Sampling temperature for every pipeline stage's LLM call | `0.0` — deliberately not the API's own default (1.0); every stage is classification/extraction, and 0.0 is what fixes the run-to-run "same evidence, different validated techniques/skills" variance (see `AnthropicProvider`'s `extra_body` note: this SDK version removed `temperature` from `messages.create()`'s typed signature, but the REST API still honors it) |
 
 **Persistence:** `DATABASE_URL` for BYO-DB is live — set it to use Postgres via `casky_db`; leave it
 unset and everything (plans, reports, outcomes, memories) falls back to JSON files under `~/.casky/`

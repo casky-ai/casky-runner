@@ -105,6 +105,50 @@ def test_build_provider_from_env_unknown_provider(monkeypatch):
         build_provider_from_env()
 
 
+# ── (3b) CASKY_MODEL_TEMPERATURE ─────────────────────────────────────────────
+# Requested directly: make temperature configurable via .env, not just
+# hardcoded — the pipeline's own default is 0.0 (see LLMProvider.complete's
+# docstring), but an operator should be able to override it without a code
+# change.
+
+def test_build_provider_from_env_defaults_temperature_to_zero(monkeypatch):
+    monkeypatch.delenv("CASKY_MODEL_TEMPERATURE", raising=False)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-123")
+
+    provider = build_provider_from_env()
+
+    assert provider._temperature == 0.0
+
+
+def test_build_provider_from_env_reads_temperature_for_anthropic(monkeypatch):
+    monkeypatch.setenv("CASKY_MODEL_TEMPERATURE", "0.3")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-123")
+
+    provider = build_provider_from_env()
+
+    assert provider._temperature == 0.3
+
+
+def test_build_provider_from_env_reads_temperature_for_openai_compatible(monkeypatch):
+    monkeypatch.setenv("CASKY_MODEL_PROVIDER", "openai_compatible")
+    monkeypatch.setenv("CASKY_MODEL_BASE_URL", "http://localhost:11434/v1")
+    monkeypatch.setenv("CASKY_MODEL_TEMPERATURE", "0.5")
+
+    provider = build_provider_from_env()
+
+    assert provider._temperature == 0.5
+
+
+def test_build_provider_from_env_falls_back_to_zero_on_unparseable_temperature(monkeypatch, capsys):
+    monkeypatch.setenv("CASKY_MODEL_TEMPERATURE", "not-a-number")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-123")
+
+    provider = build_provider_from_env()
+
+    assert provider._temperature == 0.0
+    assert "not-a-number" in capsys.readouterr().err
+
+
 # ── (4) AnthropicProvider.complete() cache_control on system block ─────────
 
 def test_anthropic_provider_complete_sets_cache_control_when_cacheable(monkeypatch):
@@ -145,6 +189,64 @@ def test_anthropic_provider_complete_omits_cache_control_when_not_cacheable(monk
     kwargs = create_mock.call_args.kwargs
     assert kwargs["system"] == [{"type": "text", "text": "one-off system prompt"}]
     assert "cache_control" not in kwargs["system"][0]
+
+
+# ── (4b) temperature defaults to 0.0, overridable, env-configurable ────────
+#
+# Live-caught: with no temperature pinned, every classifier-pipeline LLM call
+# ran at the Anthropic API's own default (1.0, full sampling randomness) —
+# the same evidence run three times validated different MITRE technique sets
+# each time, cascading into wildly different investigation step counts (7 vs
+# 12 vs 21). Every pipeline stage is classification/extraction, not creative
+# writing, so 0.0 is the right default, not an afterthought left to the API.
+#
+# AnthropicProvider passes temperature via extra_body, not a direct
+# messages.create() kwarg — this SDK version (anthropic==1.0.0) removed
+# temperature from that method's typed signature entirely (confirmed via
+# inspect.signature(); no temperature/top_p/top_k/seed param exists on it at
+# all), but the REST API itself still honors it, verified with a real,
+# live call. extra_body merges straight into the raw JSON request body.
+
+def test_anthropic_provider_complete_defaults_temperature_to_zero(monkeypatch):
+    create_mock = AsyncMock(return_value=_fake_anthropic_response())
+    monkeypatch.setattr(anthropic, "AsyncAnthropic", _make_fake_anthropic_client(create_mock))
+
+    provider = AnthropicProvider(api_key="test-key", model="claude-haiku-4-5")
+    asyncio.run(provider.complete("system", "user"))
+
+    assert create_mock.call_args.kwargs["extra_body"] == {"temperature": 0.0}
+
+
+def test_anthropic_provider_complete_temperature_is_overridable_per_call(monkeypatch):
+    create_mock = AsyncMock(return_value=_fake_anthropic_response())
+    monkeypatch.setattr(anthropic, "AsyncAnthropic", _make_fake_anthropic_client(create_mock))
+
+    provider = AnthropicProvider(api_key="test-key", model="claude-haiku-4-5")
+    asyncio.run(provider.complete("system", "user", temperature=0.7))
+
+    assert create_mock.call_args.kwargs["extra_body"] == {"temperature": 0.7}
+
+
+def test_anthropic_provider_uses_its_own_configured_temperature_when_not_overridden(monkeypatch):
+    """The CASKY_MODEL_TEMPERATURE -> AnthropicProvider(temperature=...) path —
+    a call site that doesn't pass temperature (i.e. every real pipeline call
+    site today) gets the provider's configured default, not always 0.0."""
+    create_mock = AsyncMock(return_value=_fake_anthropic_response())
+    monkeypatch.setattr(anthropic, "AsyncAnthropic", _make_fake_anthropic_client(create_mock))
+
+    provider = AnthropicProvider(api_key="test-key", model="claude-haiku-4-5", temperature=0.4)
+    asyncio.run(provider.complete("system", "user"))
+
+    assert create_mock.call_args.kwargs["extra_body"] == {"temperature": 0.4}
+
+
+def test_openai_compatible_provider_complete_defaults_temperature_to_zero():
+    provider = OpenAICompatibleProvider(base_url="http://localhost:1234/v1", model="gpt-4o-mini")
+
+    with patch("requests.post", return_value=_fake_requests_response("hello")) as mock_post:
+        asyncio.run(provider.complete("system prompt", "user prompt"))
+
+    assert mock_post.call_args.kwargs["json"]["temperature"] == 0.0
 
 
 # ── (5) AnthropicProvider.complete() re-raises SDK errors ──────────────────
