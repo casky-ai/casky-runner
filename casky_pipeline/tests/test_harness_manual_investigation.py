@@ -143,6 +143,36 @@ def test_persist_step_capture_postgres_mode_calls_both_store_functions(monkeypat
     assert exec_kwargs["agent_used"] == "manual-paste"
 
 
+def test_persist_step_capture_run_id_is_a_valid_deterministic_uuid(monkeypatch):
+    """Live-caught: skill_executions.id is a Postgres UUID column. A plain
+    f"manual-{step.id}" string ("manual-9d63e2fa-...") raised "invalid input
+    syntax for type uuid" on every single manual-mode capture — always
+    falling back to a local file even with DATABASE_URL configured and
+    reachable. run_id must (a) actually be a UUID, and (b) be the SAME UUID
+    across calls for the same step.id, so record_skill_execution's own
+    ON CONFLICT (id) DO UPDATE upserts one row per step instead of
+    accumulating a duplicate on every re-save."""
+    import uuid as uuid_module
+
+    monkeypatch.setattr(harness.config, "database_url", "postgresql://casky:casky@db:5432/casky")
+    monkeypatch.setattr(db_store, "update_step_status", lambda *a, **kw: None)
+
+    seen_run_ids = []
+    monkeypatch.setattr(
+        db_store, "record_skill_execution",
+        lambda *a, **kw: seen_run_ids.append(kw["run_id"]),
+    )
+
+    step = _step(id="9d63e2fa-fc10-420b-a491-60b58edc9cde", status="captured")
+    plan = _plan(steps=[step])
+    harness._persist_step_capture(plan, step)
+    harness._persist_step_capture(plan, step)  # re-save, e.g. a later step edit
+
+    assert len(seen_run_ids) == 2
+    uuid_module.UUID(seen_run_ids[0])  # raises ValueError if not a real UUID
+    assert seen_run_ids[0] == seen_run_ids[1]
+
+
 def test_persist_step_capture_falls_back_to_local_file_on_postgres_failure(monkeypatch):
     monkeypatch.setattr(harness.config, "database_url", "postgresql://bad:bad@127.0.0.1:1/nope")
     monkeypatch.setattr(db_store, "update_step_status", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("down")))

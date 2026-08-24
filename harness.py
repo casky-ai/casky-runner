@@ -1904,10 +1904,20 @@ def _persist_step_capture(plan: Plan, step: Step) -> None:
         try:
             now = datetime.now()
             db_store.update_step_status(step.id, step.status, database_url=config.database_url)
+            # skill_executions.id is a Postgres UUID column — a plain
+            # "manual-<step.id>" string live-caught an "invalid input syntax
+            # for type uuid" error on every single manual-mode capture,
+            # falling back to a local plan file every time even with
+            # DATABASE_URL configured and reachable. uuid5 deterministically
+            # derives a real UUID from step.id, which also makes this call
+            # idempotent — re-persisting the same step upserts the same row
+            # (record_skill_execution's ON CONFLICT (id) DO UPDATE) instead
+            # of accumulating a duplicate skill_executions row per re-save.
+            run_id = str(uuid.uuid5(uuid.NAMESPACE_OID, f"manual-{step.id}"))
             db_store.record_skill_execution(
                 investigation_id=plan.id,
                 step_id=step.id,
-                run_id=f"manual-{step.id}",
+                run_id=run_id,
                 skill_slug=step.skill_slug,
                 agent_used="manual-paste",
                 model_used=None,
