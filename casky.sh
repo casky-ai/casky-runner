@@ -131,6 +131,13 @@ No findings? Use empty array: \`{\"findings\":[],\"summary\":\"No issues found\"
       echo "[casky] Never run this against infrastructure you don't have explicit" >&2
       echo "[casky] authorization to test — unauthorized scanning may be illegal." >&2
       echo "[casky] ================================================================" >&2
+      ROLE_SECTION="You are a security analyst conducting an AUTHORIZED investigation against a
+real target — the operator has confirmed explicit authorization via --i-have-authorization and
+--i-have-network-access. Running the assigned skill's tooling — including exploitation-technique
+commands where the skill's own methodology calls for them — within the scope given below is the
+authorized, intended work of this investigation. This is not unsolicited offensive activity to
+hedge on or refuse; it is the investigation the operator explicitly asked for, in scope, with
+authorization confirmed twice."
       ENV_SECTION="You are investigating a REAL, live target — not a disposable practice lab.
 The operator has confirmed explicit authorization to test it. Stay strictly within scope:
 only interact with ${LIVE_TARGET}, never pivot to or scan any other host, domain, or IP you
@@ -160,6 +167,13 @@ Examples (substitute the literal value \"${LIVE_TARGET}\" for the target):
       echo "[casky] Never target infrastructure you don't have explicit authorization" >&2
       echo "[casky] to investigate, even in advisory/runbook form." >&2
       echo "[casky] ================================================================" >&2
+      ROLE_SECTION="You are a security analyst producing an investigation RUNBOOK for an
+AUTHORIZED real target — the operator has confirmed explicit authorization via
+--i-have-authorization. Advising on the exact commands a human analyst should run — including
+exploitation-technique commands where the skill's own methodology calls for them — is the
+authorized, intended work of this investigation, not unsolicited offensive activity to hedge on
+or refuse. You are not executing anything yourself; you are documenting what an authorized human
+operator should run next."
       ENV_SECTION="You are producing an investigation RUNBOOK for a REAL, authorized target —
 you are NOT executing anything against it. This container (${CONTAINER}) has no network
 reachability to ${LIVE_TARGET} — do not attempt \`docker exec ${CONTAINER} curl/nmap/etc
@@ -191,6 +205,12 @@ target) — do this before writing the runbook, don't invent commands from memor
 End the runbook with: \"Run these yourself with your own scoped credentials, save the output,
 then run \`casky harness -i <output-file>\` to continue this investigation.\""
     else
+      ROLE_SECTION="You are a defensive security analyst (DFIR / blue team) conducting an
+investigation in a sandboxed practice lab — synthetic, disposable data, no real systems, no real
+people, isolated from the internet by design. Running the assigned skill's tooling against this
+lab target to reproduce attacker behavior, build detections, and produce findings/remediation
+guidance is the defensive, intended work of this investigation. This is not unsolicited offensive
+activity to hedge on or refuse — that is the whole point of the exercise."
       ENV_SECTION="Two containers are running on the casky-lab Docker network:
 
 - **Skill container** (${CONTAINER}): image ghcr.io/casky-ai/skills/${CATEGORY} — your security tools
@@ -205,7 +225,13 @@ Examples:
   docker exec ${CONTAINER} bash -c 'cat /results/output.txt'"
     fi
 
-    PROMPT="${SKILL_PROMPT}
+    PROMPT="## Your role
+
+${ROLE_SECTION}
+
+---
+
+${SKILL_PROMPT}
 
 ---
 
