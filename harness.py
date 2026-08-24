@@ -1157,6 +1157,13 @@ class TranscriptAccumulator:
         etype = event.get("type")
         if etype == "assistant":
             for block in (event.get("message", {}) or {}).get("content", []) or []:
+                # Every element of content is assumed to be a dict below —
+                # given tool_use_result just turned out NOT to always be a
+                # dict despite looking like one everywhere it was checked
+                # before today, don't assume the same about content blocks
+                # either. Skip anything that isn't, rather than crash on it.
+                if not isinstance(block, dict):
+                    continue
                 if block.get("type") == "text" and block.get("text"):
                     text = block["text"]
                     self.narration_parts.append(text)
@@ -1169,14 +1176,32 @@ class TranscriptAccumulator:
                     return f"$ {cmd}"
         elif etype == "user":
             for block in (event.get("message", {}) or {}).get("content", []) or []:
+                if not isinstance(block, dict):
+                    continue
                 if block.get("type") == "tool_result":
                     tuid = block.get("tool_use_id")
-                    # tool_use_result.stdout is the precise, structured field;
-                    # block["content"] (a plain string in the common case) is
-                    # the fallback for tool results that don't populate it.
-                    tr = event.get("tool_use_result") or {}
+                    # tool_use_result.stdout is the precise, structured field
+                    # for a Bash result — but tool_use_result isn't always a
+                    # dict shaped {"stdout": ..., "stderr": ...}; live-caught
+                    # (2-concurrent-step repro, real traceback, not assumed):
+                    # for some tool results it's a plain string instead,
+                    # which crashed tr.get("stdout") with AttributeError:
+                    # 'str' object has no attribute 'get' — took down the
+                    # whole step on every run with concurrency > 1 (not a
+                    # concurrency bug at all; concurrency just made it near-
+                    # certain some step would use a tool whose result took
+                    # this shape). block["content"] (a plain string in the
+                    # common case) is the other fallback for tool results
+                    # that don't populate tool_use_result at all.
+                    tr_raw = event.get("tool_use_result")
+                    tr = tr_raw if isinstance(tr_raw, dict) else {}
                     content = block.get("content")
-                    out_text = tr.get("stdout") or (content if isinstance(content, str) else "") or ""
+                    out_text = (
+                        tr.get("stdout")
+                        or (tr_raw if isinstance(tr_raw, str) else "")
+                        or (content if isinstance(content, str) else "")
+                        or ""
+                    )
                     is_error = bool(block.get("is_error"))
                     for call in self.tool_calls:
                         if call["tool_use_id"] == tuid and call["output"] is None:
@@ -1185,7 +1210,12 @@ class TranscriptAccumulator:
                             break
                     return out_text[:400] if out_text else None
         elif etype == "result":
-            self.final_result = event.get("result", "")
+            # Coerced to str for the same reason as the two isinstance()
+            # guards above: "result" has always been a string in every real
+            # event observed so far, but that was also true of
+            # tool_use_result right up until it wasn't.
+            result = event.get("result", "")
+            self.final_result = result if isinstance(result, str) else str(result)
         return None
 
     def skill_script_invoked(self, script_path: Path | None) -> bool:
@@ -1414,8 +1444,25 @@ class CaskyHarness:
                 self.step_status[idx] = "done" if result.exit_code == 0 else "failed"
                 return result
             except Exception as exc:
+                # Live-caught: running the full plan concurrently silently
+                # dropped 7 of 8 steps into "ERROR" with zero diagnostic
+                # info anywhere — show_summary()'s else-branch only ever
+                # printed the literal word "ERROR", and this line only ever
+                # stored str(exc) (often just the exception's one-line
+                # message, sometimes empty for some exception types) rather
+                # than the full traceback. asyncio.gather(return_exceptions=
+                # True) then swallowed the exception object itself with
+                # nowhere left to inspect it. Print the FULL traceback to
+                # stderr unconditionally (not gated behind any verbosity
+                # flag — this is a step genuinely failing, not routine
+                # progress) so it survives even a piped/non-tty capture,
+                # and store it (truncated) in the live panel buffer too.
+                import traceback
+                tb = traceback.format_exc()
+                print(f"[casky_pipeline:harness] Step {idx} ({step.skill_slug}) failed:\n{tb}", file=sys.stderr)
                 self.step_status[idx] = "failed"
-                self.output_buffers[idx].append(f"[ERROR] {exc}")
+                self.output_buffers[idx].append(f"[ERROR] {type(exc).__name__}: {exc}")
+                self.output_buffers[idx].append(tb[-1500:])
                 raise
 
 
