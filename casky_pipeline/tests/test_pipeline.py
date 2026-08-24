@@ -514,6 +514,85 @@ def test_parse_json_response_still_raises_on_genuinely_truncated_json():
         _parse_json_response(raw)
 
 
+# ── Extra: salvages complete elements from a response truncated mid-JSON ────
+#
+# Live-caught on a real 3-validated-technique investigation: SkillSelector's
+# response hit its max_tokens cutoff mid-string on its 3rd selection
+# ("Unterminated string starting at: line 216 column 25"). Before this fix,
+# _parse_json_response's failure discarded ALL THREE already-complete
+# selections along with the incomplete one, turning "3 validated techniques"
+# into "0 investigation steps" — see SkillSelector.run's except-block.
+
+def test_salvage_truncated_json_recovers_complete_array_elements():
+    from casky_pipeline.pipeline import _salvage_truncated_json
+
+    raw = (
+        '{"selected": ['
+        '{"skill_slug": "mimikatz-detection", "technique_id": "T1003"}, '
+        '{"skill_slug": "sam-hive-analysis", "technique_id": "T1003"}, '
+        '{"skill_slug": "detecting-network-scanning-with-ids-signatures", "technique_name": "T10'
+    )
+    data = _salvage_truncated_json(raw)
+    assert data is not None
+    assert [s["skill_slug"] for s in data["selected"]] == [
+        "mimikatz-detection",
+        "sam-hive-analysis",
+    ]
+
+
+def test_salvage_truncated_json_returns_none_when_nothing_completed():
+    from casky_pipeline.pipeline import _salvage_truncated_json
+
+    # Same shape as the genuinely-truncated test above: cut off before the
+    # very first array element ever closed — nothing safe to salvage.
+    raw = '{"techniques": [{"technique_id": "T10'
+    assert _salvage_truncated_json(raw) is None
+
+
+def test_salvage_truncated_json_returns_none_for_malformed_json():
+    from casky_pipeline.pipeline import _salvage_truncated_json
+
+    # A stray closing bracket with nothing open — not a truncation at all.
+    assert _salvage_truncated_json('}garbage') is None
+
+
+def test_parse_json_response_recovers_via_salvage_when_other_repairs_fail():
+    from casky_pipeline.pipeline import _parse_json_response
+
+    raw = (
+        '```json\n'
+        '{"selected": ['
+        '{"skill_slug": "mimikatz-detection"}, '
+        '{"skill_slug": "sam-hive-analysis", "rationale": "cut off mid-strin'
+    )
+    data = _parse_json_response(raw)
+    assert [s["skill_slug"] for s in data["selected"]] == ["mimikatz-detection"]
+
+
+@pytest.mark.asyncio
+async def test_skill_selector_salvages_earlier_selections_on_mid_response_truncation():
+    """Full-stack repro of the live-caught bug: 2 complete selections followed by
+    a 3rd cut off mid-string must yield 2 selected skills, not 0."""
+    responses = _happy_responses()
+    responses["selector"] = (
+        '```json\n{"selected": ['
+        '{"skill_slug": "mimikatz-detection", "skill_category": "identity-security", '
+        '"technique_id": "T1003", "technique_name": "OS Credential Dumping", '
+        '"rationale": "r", "evidence_focus": "e", "confidence": 0.8, "evidence_anchors": []}, '
+        '{"skill_slug": "sam-hive-analysis", "skill_category": "identity-security", '
+        '"technique_id": "T1003", "technique_name": "OS Credential Dumping", '
+        '"rationale": "r", "evidence_focus": "e", "confidence": 0.7, "evidence_anchors": []}, '
+        '{"skill_slug": "mimikatz-detection", "skill_category": "identity-security", '
+        '"technique_id": "T1003", "technique_name": "OS Cred'
+    )
+    provider = FakeLLMProvider(responses)
+    from casky_pipeline.pipeline import TechniqueValidatorOutput
+
+    output = await SkillSelector().run(_make_input(), TechniqueValidatorOutput(), provider)
+
+    assert [s.skill_slug for s in output.selected] == ["mimikatz-detection", "sam-hive-analysis"]
+
+
 @pytest.mark.asyncio
 async def test_skill_selector_backfills_blank_technique_name_from_technique_id():
     from casky_pipeline.pipeline import TechniqueValidatorOutput, ValidatedTechnique
