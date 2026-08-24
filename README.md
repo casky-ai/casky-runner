@@ -283,6 +283,34 @@ docker exec -it casky-runner casky run web-app --live-target https://staging.exa
 **Only ever run Path C against infrastructure you have explicit authorization to test** — see
 [`SECURITY.md`](SECURITY.md) for the full trust-model discussion.
 
+**Bring your own skill container.** `SKILL_LAB_NAME` isn't restricted to the built-in `skill-lab` —
+it's just a container name, resolved via `docker exec` over the shared Docker socket, which reaches
+*any* running container regardless of network mode. If you already have a container with the tools
+you want (e.g. `nicolaka/netshoot` for raw packet tools), point Casky at it instead:
+
+```bash
+docker run -d --name skill-custom \
+  --network=container:<target-container-id-or-name> \
+  -v casky-skills-data:/opt/skills-library:ro \
+  nicolaka/netshoot sleep infinity
+
+docker exec -e SKILL_LAB_NAME=skill-custom -it casky-runner casky run network --agent claude
+# or: docker exec -e SKILL_LAB_NAME=skill-custom -it casky-runner casky harness --auto
+```
+
+Two things your container needs that a plain `docker run --rm -it` won't give you by default:
+- **Stay running in the background** (`-d` + a keep-alive command like `sleep infinity`, not `--rm -it`)
+  — `docker exec` needs a long-lived target across the whole investigation, not a session tied to
+  your terminal.
+- **The skills library mounted** at the same path `skill-lab` uses (`-v
+  casky-skills-data:/opt/skills-library:ro`) — without it, the raw tools your image ships still work,
+  but `python3 /opt/skills-library/skills/<slug>/scripts/agent.py` (the tested, purpose-built script
+  the agent is instructed to prefer) will fail with "not found."
+
+`--network=container:<id>` is your own choice for giving your tools visibility into a target's network
+namespace (e.g. so packet-capture tools see the target's traffic) — unrelated to whether `docker exec`
+can reach the container at all, which it always can via the socket.
+
 **The full target catalogue.** Every target below is a real, published image from
 [`casky-ai/skill-targets`](https://github.com/casky-ai/skill-targets) (`dvwa`/`juice-shop` use
 well-known third-party images instead — same effect). Each pairs with one of the 18 real tool
@@ -342,7 +370,7 @@ mount, and evidence size limits.
 | `CASKY_UI_PORT` | Host port Casky UI is reachable on | Optional, default `8766` |
 | `CASKY_UI_HOST` | Bind address for `CASKY_UI_PORT` — `0.0.0.0` to expose beyond localhost (no RBAC, think first) | Optional, default `127.0.0.1` |
 | `CASKY_UI_FORCE_SECURE_COOKIE` | Mark the UI's session cookie `Secure` — only set `true` if you've put your own TLS-terminating reverse proxy in front of Casky UI; leave unset for the default plain-HTTP setup (see "Where it's reachable" above) | Optional, default unset (not Secure) |
-| `SKILL_LAB_NAME` | Name of the running skill container (Path B, sandboxed lab) | Optional, default `skill-lab` |
+| `SKILL_LAB_NAME` | Name of the running skill container (Path B, sandboxed lab) — can point at any running container, not just the built-in `skill-lab`, see "Bring your own skill container" above | Optional, default `skill-lab` |
 | `SKILL_LIVE_NAME` | Name of the running skill container (Path C, live/authorized target) | Optional, default `skill-live` |
 | `CASKY_APP_URL` | Platform URL override | Optional, only relevant if syncing to casky.ai |
 | `CASKY_API_KEY` | **This is what switches `casky harness` into platform mode** (fetches/syncs investigation plans with casky.ai). Leave unset for fully local/offline use — this is the one that matters for "am I in local or platform mode?" | Optional |
