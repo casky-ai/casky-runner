@@ -78,6 +78,10 @@ class Step:
     evidence_focus: str
     step_order: int
     status: str = "pending"
+    # Analyst-pasted command output from the manual (non---auto) investigation
+    # flow — see run_interactive_investigation(). Empty for --auto-mode steps,
+    # which capture their output as an AgentResult instead.
+    manual_output: str = ""
 
 
 @dataclass
@@ -119,6 +123,12 @@ class AgentResult:
     exit_code: int
     output: str
     report_url: str
+
+
+# Local-mode report output root — a module-level constant (rather than a
+# literal repeated at each call site) specifically so tests can monkeypatch
+# it to a tmp_path instead of writing into the real /var/casky/reports.
+_LOCAL_REPORTS_DIR = Path("/var/casky/reports")
 
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -476,6 +486,59 @@ def _print_memory_verdict(context_nodes: list) -> None:
     ))
 
 
+def _plan_to_local_json_dict(plan: Plan) -> dict:
+    """The plans_dir/<plan.id>.json shape — shared by the initial plan-creation
+    write and every later rewrite (e.g. after each manually-captured step, see
+    _save_local_plan_file/_persist_step_capture), so the two never drift."""
+    return {
+        "id": plan.id,
+        "domain": plan.domain,
+        "evidence_text": plan.evidence_text,
+        "status": plan.status,
+        "created_at": plan.created_at,
+        "cve_references": [
+            {
+                "cve_id": r.cve_id,
+                "cvss_score": r.cvss_score,
+                "cvss_severity": r.cvss_severity,
+                "is_kev": r.is_kev,
+                "technique_ids": r.technique_ids,
+                "skill_ids": r.skill_ids,
+            }
+            for r in plan.cve_references
+        ],
+        "evidence_gaps": plan.evidence_gaps,
+        "confidence": plan.confidence,
+        "investigation_steps": [
+            {
+                "id": s.id,
+                "skill_slug": s.skill_slug,
+                "skill_category": s.skill_category,
+                "skill_document": s.skill_document,
+                "technique_id": s.technique_id,
+                "technique_name": s.technique_name,
+                "rationale": s.rationale,
+                "evidence_focus": s.evidence_focus,
+                "step_order": s.step_order,
+                "status": s.status,
+                "manual_output": s.manual_output,
+            }
+            for s in plan.steps
+        ],
+    }
+
+
+def _save_local_plan_file(plan: Plan) -> Path:
+    """Writes/overwrites plans_dir/<plan.id>.json. Called once at plan creation
+    (JSON-file fallback mode) and again after every step captured through the
+    manual investigation flow, so re-running it is always safe/idempotent —
+    it's a full rewrite from the in-memory Plan, not an append."""
+    config.plans_dir.mkdir(parents=True, exist_ok=True)
+    plan_file = config.plans_dir / f"{plan.id}.json"
+    plan_file.write_text(json.dumps(_plan_to_local_json_dict(plan), indent=2))
+    return plan_file
+
+
 def generate_local_plan(evidence_text: str) -> Plan | None:
     library = LocalSkillsLibrary()
     if not library.available:
@@ -702,44 +765,7 @@ def generate_local_plan(evidence_text: str) -> Plan | None:
                 )
 
         if not saved_to_db:
-            config.plans_dir.mkdir(parents=True, exist_ok=True)
-            plan_file = config.plans_dir / f"{plan.id}.json"
-            plan_data = {
-                "id": plan.id,
-                "domain": plan.domain,
-                "evidence_text": plan.evidence_text,
-                "status": plan.status,
-                "created_at": plan.created_at,
-                "cve_references": [
-                    {
-                        "cve_id": r.cve_id,
-                        "cvss_score": r.cvss_score,
-                        "cvss_severity": r.cvss_severity,
-                        "is_kev": r.is_kev,
-                        "technique_ids": r.technique_ids,
-                        "skill_ids": r.skill_ids,
-                    }
-                    for r in plan.cve_references
-                ],
-                "evidence_gaps": plan.evidence_gaps,
-                "confidence": plan.confidence,
-                "investigation_steps": [
-                    {
-                        "id": s.id,
-                        "skill_slug": s.skill_slug,
-                        "skill_category": s.skill_category,
-                        "skill_document": s.skill_document,
-                        "technique_id": s.technique_id,
-                        "technique_name": s.technique_name,
-                        "rationale": s.rationale,
-                        "evidence_focus": s.evidence_focus,
-                        "step_order": s.step_order,
-                        "status": s.status,
-                    }
-                    for s in plan.steps
-                ],
-            }
-            plan_file.write_text(json.dumps(plan_data, indent=2))
+            plan_file = _save_local_plan_file(plan)
             console.print(f"[green]Plan saved:[/green] {plan_file}")
 
         console.print(f"[green]Confidence:[/green] {avg_confidence:.1%}")
@@ -914,6 +940,7 @@ class PlatformClient:
                 evidence_focus=s.get("evidence_focus", ""),
                 step_order=s.get("step_order", i),
                 status=s.get("status", "pending"),
+                manual_output=s.get("manual_output", ""),
             )
             for i, s in enumerate(data.get("investigation_steps", []))
         ]
@@ -941,6 +968,73 @@ class PlatformClient:
             evidence_gaps=data.get("evidence_gaps", []),
             confidence=data.get("confidence", 0.0),
         )
+
+
+def _plan_from_db_investigation(data: dict) -> Plan:
+    """The Postgres-backed counterpart to PlatformClient._parse_plan() — builds
+    a Plan from casky_db.store.get_investigation()'s full nested shape, resuming
+    each Step's status AND manual_output from its skill_executions row (the
+    'agent_used=\"manual-paste\"' rows _persist_step_capture writes). Used by
+    the 'r' (resume from Postgres) Plan Source option so a plan that only ever
+    existed in Postgres — never a local JSON file — can be reloaded after the
+    harness process exits."""
+    output_by_step_id = {
+        se.get("step_id"): se.get("output") or ""
+        for se in (data.get("skill_executions") or [])
+        if se.get("step_id")
+    }
+    ordered_steps = sorted(data.get("steps") or [], key=lambda s: s.get("step_order") or 0)
+    steps = [
+        Step(
+            id=s.get("id", ""),
+            skill_slug=s.get("skill_slug", "") or "",
+            skill_category=s.get("skill_category", "") or "web-app",
+            skill_document=s.get("skill_document", "") or "",
+            technique_id=s.get("technique_id", "") or "",
+            technique_name=s.get("technique_name", "") or "",
+            rationale=s.get("rationale", "") or "",
+            evidence_focus=s.get("evidence_focus", "") or "",
+            step_order=s.get("step_order", i) or i,
+            status=s.get("status", "pending") or "pending",
+            manual_output=output_by_step_id.get(s.get("id", ""), ""),
+        )
+        for i, s in enumerate(ordered_steps)
+    ]
+    return Plan(
+        id=data.get("id", ""),
+        domain=data.get("domain", "") or "",
+        evidence_text=data.get("evidence_text", "") or "",
+        status=data.get("status", "") or "",
+        steps=steps,
+        created_at=str(data.get("created_at") or ""),
+        cve_references=[
+            CveEnrichment(
+                cve_id=r.get("cve_id", ""),
+                cvss_score=r.get("cvss_score"),
+                cvss_severity=r.get("cvss_severity", "") or "",
+                is_kev=bool(r.get("is_kev", False)),
+                technique_ids=list(r.get("technique_ids") or []),
+                skill_ids=list(r.get("skill_ids") or []),
+            )
+            for r in (data.get("cve_references") or [])
+        ],
+        evidence_gaps=list(data.get("evidence_gaps") or []),
+        confidence=float(data.get("confidence") or 0.0),
+    )
+
+
+def list_db_plans(limit: int = 20) -> list[Plan]:
+    """Investigations saved in Postgres, newest first, resumed with their
+    per-step progress via _plan_from_db_investigation. One get_investigation()
+    call per row (N+1) — fine at this scale (an interactive local CLI picking
+    among <= `limit` recent investigations, not a paginated API)."""
+    rows = db_store.list_investigations(limit=limit, database_url=config.database_url)
+    plans = []
+    for row in rows:
+        data = db_store.get_investigation(row["id"], database_url=config.database_url)
+        if data:
+            plans.append(_plan_from_db_investigation(data))
+    return plans
 
 
 # ── Skill prompt assembly ─────────────────────────────────────────────────────
@@ -1224,10 +1318,40 @@ class HarnessUI:
     def ask_plan_source(self) -> str:
         console.print("\n[cyan]Plan Source[/cyan]")
         console.print("  [bold]g[/bold]  Generate new plan from evidence (requires skills library)")
+        if config.database_url:
+            console.print("  [bold]r[/bold]  Resume an investigation saved in Postgres")
         console.print("  [bold]p[/bold]  Load plan from platform")
         console.print("  [bold]l[/bold]  Load local plan file")
-        choice = Prompt.ask("Choose", choices=["g", "p", "l"], default="l", console=console)
+        choices = ["g", "p", "l"] + (["r"] if config.database_url else [])
+        choice = Prompt.ask("Choose", choices=choices, default="l", console=console)
         return choice
+
+    def show_plan_list_db(self, plans: list[Plan]) -> Plan | None:
+        if not plans:
+            console.print("[yellow]No investigations found in Postgres.[/yellow]")
+            return None
+
+        table = Table(title="Investigations (Postgres)", border_style="cyan")
+        table.add_column("#", style="dim", width=4)
+        table.add_column("Domain")
+        table.add_column("Status")
+        table.add_column("Captured", justify="right")
+        table.add_column("Created")
+
+        for i, p in enumerate(plans, 1):
+            captured = sum(1 for s in p.steps if s.status in ("captured", "skipped"))
+            table.add_row(
+                str(i),
+                rmarkup(p.domain) or p.id[:12],
+                p.status,
+                f"{captured}/{len(p.steps)}",
+                p.created_at[:10] if p.created_at else "",
+            )
+
+        console.print(table)
+        choice = IntPrompt.ask("Select investigation", default=1, console=console)
+        idx = max(1, min(choice, len(plans))) - 1
+        return plans[idx]
 
     def show_plan_list_platform(self, plans: list[Plan]) -> Plan | None:
         if not plans:
@@ -1710,47 +1834,286 @@ def _get_fallback_commands(category: str) -> list[str]:
     return fallbacks.get(category, ["echo 'Run appropriate security tools for this skill'"])
 
 
-def print_interactive_runbook(plan: Plan, steps: list[Step]) -> None:
-    """Print step-by-step runbook for interactive investigation."""
+def _print_step_guidance(step: Step) -> None:
+    """Prints one step's technique/goal/commands/look-for — the guidance half
+    of the old print_interactive_runbook, factored out so
+    run_interactive_investigation can interleave it with the actual paste
+    prompt per step instead of dumping the whole runbook up front.
+
+    step.technique_name / .rationale / .evidence_focus are LLM-generated free
+    text, and cmd below comes from a third-party skill doc corpus we don't
+    control — any of these can contain a literal '[' that Rich's markup parser
+    would otherwise try to interpret as a style tag (silently swallowing it,
+    or worse). Escape all of them; only the static style tags stay unescaped."""
+    console.print(
+        f"[dim]MITRE Technique:[/dim] {rmarkup(step.technique_id)} — {rmarkup(step.technique_name)}"
+    )
+    if step.rationale:
+        console.print(f"[dim]Goal:[/dim] {rmarkup(step.rationale)}")
+
+    console.print("\n[bold]Run in skill-lab:[/bold]")
+
+    commands = _extract_commands_from_skill_doc(step.skill_document)
+    if not commands:
+        commands = _get_fallback_commands(step.skill_category)
+
+    for cmd in commands:
+        console.print(f"  [cyan]{rmarkup(cmd)}[/cyan]")
+
+    if step.evidence_focus:
+        console.print(f"\n[dim]Look for in output:[/dim] {rmarkup(step.evidence_focus)}")
+
+
+def _capture_step_paste(step_num: int, total: int) -> tuple[str, bool]:
+    """Prompts for one step's pasted output. Returns (text, skipped). Mirrors
+    the evidence-paste loop's own END-sentinel pattern (see main()'s comment
+    on why Ctrl+D alone is ambiguous on a real TTY) — 'SKIP' as the very
+    first line is the equivalent sentinel for skipping a step outright."""
+    console.print(
+        f"\n[bold]Paste the output for this step[/bold] (step {step_num}/{total}) — "
+        "type SKIP alone to skip it, or END alone when done pasting:"
+    )
+    lines: list[str] = []
+    try:
+        while True:
+            line = input()
+            if line.strip() == "END":
+                break
+            if not lines and line.strip().upper() == "SKIP":
+                return "", True
+            lines.append(line)
+    except EOFError:
+        pass
+    return "\n".join(lines), False
+
+
+def _persist_step_capture(plan: Plan, step: Step) -> None:
+    """Durably saves one step's capture (status + pasted output) the moment it
+    happens, not batched to the end of the loop — so a killed/closed session
+    only ever loses the step it was mid-paste on, never everything before it.
+
+    Mirrors generate_local_plan()'s own Postgres-first-with-JSON-fallback
+    pattern: try casky_db when DATABASE_URL is configured, fall back to
+    rewriting the plan's local JSON file on ANY failure — including a plan
+    that was never itself inserted into Postgres (e.g. loaded via 'p' or 'l'
+    while DATABASE_URL happens to be set): update_step_status's UPDATE would
+    silently match 0 rows and record_skill_execution's INSERT would then
+    raise a foreign-key violation, both of which land here as "couldn't
+    persist to Postgres" rather than a crash or a silently-dropped step."""
+    if config.database_url:
+        try:
+            now = datetime.now()
+            db_store.update_step_status(step.id, step.status, database_url=config.database_url)
+            db_store.record_skill_execution(
+                investigation_id=plan.id,
+                step_id=step.id,
+                run_id=f"manual-{step.id}",
+                skill_slug=step.skill_slug,
+                agent_used="manual-paste",
+                model_used=None,
+                exit_code=0,
+                started_at=now,
+                completed_at=now,
+                output=step.manual_output,
+                database_url=config.database_url,
+            )
+            return
+        except Exception as e:
+            console.print(
+                f"[yellow]Could not save progress to Postgres ({rmarkup(str(e))}) — "
+                "falling back to a local plan file.[/yellow]"
+            )
+    _save_local_plan_file(plan)
+
+
+_MANUAL_SYNTHESIS_SYSTEM_PROMPT = """You are a security investigation analyst reviewing evidence an \
+analyst collected by manually running commands during a guided investigation.
+
+You will be given, for each investigation step: the MITRE ATT&CK technique it targeted, the \
+investigation skill used, the goal of the step, and the raw command output the analyst pasted back. \
+Your job is to synthesize this into findings.
+
+Respond with ONLY a JSON object — no prose, no markdown code fences — exactly this shape:
+{
+  "summary": "2-3 sentence executive summary of what was confirmed or ruled out",
+  "risk_rating": "critical|high|medium|low|informational",
+  "findings": [
+    {
+      "title": "short finding title",
+      "description": "what was found and why it matters",
+      "severity": "critical|high|medium|low|informational",
+      "mitre_technique": "T1046",
+      "affected_asset": "hostname/IP if identifiable, else empty string",
+      "remediation": "concrete next action"
+    }
+  ]
+}
+If the pasted output doesn't confirm anything actionable for a step, do not fabricate a finding for \
+it — omit it rather than inventing severity or evidence that isn't there."""
+
+
+async def _synthesize_manual_findings(plan: Plan, captured_steps: list[Step]) -> dict:
+    """One-shot LLM synthesis over manually-captured step output — the
+    'Claude will analyze and synthesize findings into a report' promise the
+    runbook panel makes. Uses the same BYO-LLM provider
+    (casky_pipeline.llm_providers) and hardened JSON parser
+    (casky_pipeline.pipeline._parse_json_response — including its
+    truncated-response salvage) the classifier pipeline already relies on,
+    rather than inventing a second LLM-calling pattern for this."""
+    from casky_pipeline.pipeline import _parse_json_response
+
+    steps_text = "\n\n".join(
+        f"Step: {s.skill_slug}\n"
+        f"MITRE Technique: {s.technique_id} — {s.technique_name}\n"
+        f"Goal: {s.rationale}\n"
+        f"Analyst-pasted output:\n{s.manual_output.strip()}"
+        for s in captured_steps
+    )
+    user_prompt = (
+        f"INVESTIGATION EVIDENCE (original trigger):\n{plan.evidence_text}\n\n"
+        f"STEP OUTPUT:\n{steps_text}"
+    )
+    provider = build_provider_from_env()
+    raw = await provider.complete(
+        _MANUAL_SYNTHESIS_SYSTEM_PROMPT, user_prompt, max_tokens=4096, cacheable_system=True
+    )
+    return _parse_json_response(raw)
+
+
+def _findings_markdown(plan: Plan, summary: str, findings: list[dict]) -> str:
+    """Same executive-summary + severity-sorted-table shape as --auto mode's
+    generate_consolidated_report(), so manual and --auto investigations
+    produce recognizably the same report format."""
+    sev_order = {"critical": 0, "high": 1, "medium": 2, "low": 3, "informational": 4}
+    findings_sorted = sorted(
+        findings, key=lambda f: sev_order.get(str(f.get("severity", "")).lower(), 99)
+    )
+    now = datetime.now().strftime("%Y-%m-%d %H:%M UTC")
+    lines = [
+        f"# Investigation Report — {plan.domain}",
+        "",
+        f"**Plan ID:** {plan.id}",
+        f"**Generated:** {now}",
+        f"**Findings:** {len(findings_sorted)}",
+        "",
+        "## Executive Summary",
+        "",
+        summary or "No summary provided.",
+        "",
+        "## Findings",
+        "",
+    ]
+    if findings_sorted:
+        lines.append("| # | Severity | Title | Technique |")
+        lines.append("|---|---|---|---|")
+        for i, f in enumerate(findings_sorted, 1):
+            title = f.get("title", f.get("description", ""))
+            tech = f.get("mitre_technique", f.get("technique_id", ""))
+            lines.append(f"| {i} | {f.get('severity', '')} | {title} | {tech} |")
+    else:
+        lines.append("No findings recorded.")
+    return "\n".join(lines)
+
+
+def _save_manual_investigation_report(plan: Plan, synthesis: dict) -> str:
+    """Persists the synthesized findings + consolidated report — Postgres
+    (findings + consolidated_reports tables) when configured, else a
+    REPORT.md under /var/casky/reports/<plan_id>/, matching --auto mode's
+    generate_consolidated_report() output shape. Returns a human-readable
+    location to print. Same Postgres-then-fallback pattern as
+    _persist_step_capture — never loses the synthesized findings just
+    because the DB write failed."""
+    summary = str(synthesis.get("summary", "") or "")
+    risk_rating = str(synthesis.get("risk_rating", "") or "") or None
+    findings = list(synthesis.get("findings", []) or [])
+    markdown = _findings_markdown(plan, summary, findings)
+
+    if config.database_url:
+        try:
+            db_store.record_findings(plan.id, None, findings, database_url=config.database_url)
+            report_json = {"summary": summary, "risk_rating": risk_rating, "findings": findings}
+            db_store.save_consolidated_report(
+                plan.id, summary, risk_rating, markdown, report_json,
+                database_url=config.database_url,
+            )
+            return f"Postgres (investigation {plan.id})"
+        except Exception as e:
+            console.print(
+                f"[yellow]Could not save report to Postgres ({rmarkup(str(e))}) — "
+                "falling back to a local file.[/yellow]"
+            )
+
+    reports_dir = _LOCAL_REPORTS_DIR / plan.id
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    report_path = reports_dir / "REPORT.md"
+    report_path.write_text(markdown)
+    return str(report_path)
+
+
+def run_interactive_investigation(plan: Plan, steps: list[Step]) -> None:
+    """The manual (non---auto) investigation flow: guide the analyst through
+    each step, capture their pasted output, save progress after every single
+    step (not batched — see _persist_step_capture), skip steps a prior,
+    exited session already captured, then synthesize findings into a report.
+
+    This replaces the old print_interactive_runbook(), which printed this
+    same guidance and then just... exited, despite its own closing lines
+    promising "Paste the output back to this window" and "Claude will
+    analyze and synthesize findings into a report" — neither of which the
+    old code actually did. That gap is exactly what this function closes."""
     console.print(Panel(
         "[bold cyan]Open a skill-lab shell in a new terminal:[/bold cyan]\n\n"
         "  [cyan]docker exec -it skill-lab bash[/cyan]\n\n"
-        "[dim]Then follow each step below. Paste the output back to this window when done.[/dim]",
+        "[dim]Run each step's commands there, then come back and paste the output into "
+        "THIS window when prompted. Progress is saved after every step — if this window "
+        "closes, reopen `casky harness`, load this same plan (Postgres: 'r', local file: "
+        "'l'), and already-captured steps are skipped automatically.[/dim]",
         title="Interactive Investigation Runbook",
-        border_style="cyan"
+        border_style="cyan",
     ))
 
-    # step.technique_name / .rationale / .evidence_focus are LLM-generated free text,
-    # and cmd below comes from a third-party skill doc corpus we don't control — any
-    # of these can contain a literal '[' that Rich's markup parser would otherwise
-    # try to interpret as a style tag (silently swallowing it, or worse). Escape all
-    # of them; only the static style tags in these f-strings stay unescaped.
-    for i, step in enumerate(steps, 1):
-        console.print(f"\n[bold cyan]Step {i}: {rmarkup(step.skill_slug)}[/bold cyan]")
+    already_captured = [s for s in steps if s.status in ("captured", "skipped")]
+    if already_captured:
         console.print(
-            f"[dim]MITRE Technique:[/dim] {rmarkup(step.technique_id)} — {rmarkup(step.technique_name)}"
+            f"\n[green]Resuming — {len(already_captured)} of {len(steps)} step(s) already "
+            "captured, skipping them.[/green]"
         )
-        if step.rationale:
-            console.print(f"[dim]Goal:[/dim] {rmarkup(step.rationale)}")
 
-        console.print(f"\n[bold]Run in skill-lab:[/bold]")
+    pending_steps = [s for s in steps if s.status not in ("captured", "skipped")]
+    for i, step in enumerate(pending_steps, 1):
+        console.print(f"\n[bold cyan]Step {i}/{len(pending_steps)}: {rmarkup(step.skill_slug)}[/bold cyan]")
+        _print_step_guidance(step)
 
-        # Extract commands from skill document or use fallback
-        commands = _extract_commands_from_skill_doc(step.skill_document)
-        if not commands:
-            commands = _get_fallback_commands(step.skill_category)
-
-        for cmd in commands:
-            console.print(f"  [cyan]{rmarkup(cmd)}[/cyan]")
-
-        if step.evidence_focus:
-            console.print(f"\n[dim]Look for in output:[/dim] {rmarkup(step.evidence_focus)}")
-
+        output_text, skipped = _capture_step_paste(i, len(pending_steps))
+        step.manual_output = output_text
+        step.status = "skipped" if skipped else "captured"
+        _persist_step_capture(plan, step)
+        console.print("[yellow]Skipped.[/yellow]" if skipped else "[dim]Saved.[/dim]")
         console.print("\n" + "─" * 70)
 
-    console.print("\n[green]✓ Paste the output from each step back to this window.[/green]")
-    console.print("[green]✓ Provide context about what you found and what it means.[/green]")
-    console.print("[green]✓ Claude will analyze and synthesize findings into a report.[/green]\n")
+    captured_steps = [s for s in steps if s.status == "captured" and s.manual_output.strip()]
+    if not captured_steps:
+        console.print("\n[yellow]No step output captured — nothing to synthesize.[/yellow]")
+        return
+
+    console.print(f"\n[dim]Synthesizing findings from {len(captured_steps)} captured step(s)…[/dim]")
+    try:
+        synthesis = asyncio.run(_synthesize_manual_findings(plan, captured_steps))
+    except Exception as exc:
+        console.print(
+            f"[yellow]Could not synthesize findings automatically ({rmarkup(str(exc))}). "
+            "Your captured step output is already saved — reload this plan to retry.[/yellow]"
+        )
+        return
+
+    location = _save_manual_investigation_report(plan, synthesis)
+    findings_count = len(synthesis.get("findings", []) or [])
+    console.print(
+        f"\n[green]✓ {findings_count} finding(s) synthesized. Report saved to {location}.[/green]\n"
+    )
+
+    if config.is_local_mode:
+        _capture_outcome_and_extract_memory(plan)
 
 
 def _load_evidence_from_file(path: Path) -> str:
@@ -1885,6 +2248,18 @@ def main() -> None:
                 sys.exit(1)
             plan = ui.show_plan_list_platform(platform_plans)
 
+        elif source == "r":
+            # Resume an investigation saved in Postgres — the only reload path
+            # for a plan created while DATABASE_URL was set, since that mode
+            # skips the local plans_dir/*.json write entirely (see
+            # generate_local_plan's saved_to_db branch).
+            try:
+                db_plans = list_db_plans()
+            except db_store.DatabaseUnavailable as exc:
+                console.print(f"[red]Error:[/red] DATABASE_URL is set but unreachable ({rmarkup(str(exc))})")
+                sys.exit(1)
+            plan = ui.show_plan_list_db(db_plans)
+
         else:
             # Load local plan file
             local_plans = client.list_local_plans()
@@ -1920,8 +2295,10 @@ def main() -> None:
         # Auto-execute: spawn Claude subprocesses for each skill
         asyncio.run(_run_harness(plan, steps))
     else:
-        # Interactive: print runbook and let investigator run commands manually
-        print_interactive_runbook(plan, steps)
+        # Interactive: guide the investigator through each step, capturing and
+        # saving their pasted output as they go (resumable — see
+        # run_interactive_investigation's docstring).
+        run_interactive_investigation(plan, steps)
 
 
 if __name__ == "__main__":

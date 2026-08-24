@@ -185,6 +185,31 @@ def test_record_skill_execution_round_trip(migrated_db: str):
     assert execu["output"] == "ran fine"
 
 
+# ── update_step_status ───────────────────────────────────────────────────────
+# The durability primitive harness.py's manual (non---auto) investigation flow
+# calls after every single captured step — see _persist_step_capture.
+
+def test_update_step_status_round_trip(migrated_db: str):
+    plan = _sample_plan()
+    store.create_investigation(plan, database_url=migrated_db)
+    step_id = plan["steps"][0]["id"]
+
+    store.update_step_status(step_id, "captured", database_url=migrated_db)
+
+    got = store.get_investigation(plan["id"], database_url=migrated_db)
+    assert got["steps"][0]["status"] == "captured"
+
+
+def test_update_step_status_is_a_silent_no_op_for_unknown_step_id(migrated_db: str):
+    """No investigation_steps row for this id (e.g. the owning plan was never
+    inserted into Postgres at all) — must not raise. harness.py's
+    _persist_step_capture relies on the FOLLOWING record_skill_execution call
+    to surface that as a failure (a foreign-key violation) and fall back to
+    local-file persistence; this call alone succeeding-but-doing-nothing is
+    the documented, intentional behavior."""
+    store.update_step_status(str(uuid.uuid4()), "captured", database_url=migrated_db)
+
+
 # ── save_consolidated_report ────────────────────────────────────────────────
 
 def test_save_consolidated_report_round_trip(migrated_db: str):

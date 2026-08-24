@@ -181,6 +181,26 @@ def _parse_ts(value: Any) -> datetime | None:
         return None
 
 
+def update_step_status(step_id: str, status: str, database_url: str | None = None) -> None:
+    """Updates one investigation_steps row's status. This is the durability
+    primitive the manual (non---auto) investigation flow in harness.py's
+    run_interactive_investigation() uses to persist progress after every
+    single pasted-output capture — not batched to the end — so a killed or
+    closed session can resume exactly where it left off instead of losing
+    everything. No-ops (0 rows affected, no error) if step_id doesn't exist
+    in investigation_steps — e.g. the owning plan was loaded from a local
+    file or the platform rather than created in Postgres; the caller treats
+    that the same as any other failure and falls back to local-file
+    persistence instead of assuming this call means the write landed."""
+    with _connect(database_url) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE investigation_steps SET status = %s WHERE id = %s",
+                (status, step_id),
+            )
+        conn.commit()
+
+
 def record_skill_execution(
     investigation_id: str,
     step_id: str | None,
