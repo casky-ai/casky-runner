@@ -1112,6 +1112,119 @@ def assemble_prompt(plan: Plan, step: Step) -> str:
     return "".join(parts)
 
 
+# ── Agent transcript verification ──────────────────────────────────────────
+#
+# Directly requested, for a workshop demo: "deterministically show that we
+# are running the skills and the agent.py" — this doesn't make execution
+# deterministic (that's still steering, not enforcement: the agent decides
+# how to accomplish the task, same as ever), but it does turn "the agent
+# says it ran the script" into "here is the literal shell command it ran and
+# the literal output it got back" — verifiable, not asserted. Without this,
+# harness.py only ever saw the agent's final narrated text (--output-format
+# text, the default) — a hallucinated "I ran the tool and found X" would
+# have been indistinguishable from a real one at this layer.
+#
+# CASKY_CAPTURE_TRANSCRIPT=1 (see casky.sh) switches the subprocess to
+# --output-format stream-json --verbose: one JSON event per line. Shape
+# confirmed directly against the real, installed Claude Code CLI before
+# writing this (not assumed from docs) — see TranscriptAccumulator.ingest_line.
+
+@dataclass
+class TranscriptAccumulator:
+    """Incrementally parses one agent subprocess's --output-format
+    stream-json event stream, line by line, as it arrives — so the live
+    dashboard can still show real-time progress (ingest_line's return value)
+    while a full, structured record of every Bash tool call + its real
+    result accumulates for the final verification banner."""
+
+    narration_parts: list[str] = field(default_factory=list)
+    tool_calls: list[dict] = field(default_factory=list)  # {tool_use_id, command, output, is_error}
+    final_result: str | None = None
+
+    def ingest_line(self, raw_line: str) -> str | None:
+        """Parses one JSONL line, updates accumulated state, and returns a
+        short human-readable string worth showing live (or None for an
+        event with nothing display-worthy — thinking blocks, init/system
+        events, etc.). Never raises: a line that isn't valid JSON (shouldn't
+        happen with stream-json, but the harness must never crash on a
+        malformed line from a subprocess it doesn't control) is returned
+        as-is so at least something is visible, rather than silently dropped."""
+        try:
+            event = json.loads(raw_line)
+        except json.JSONDecodeError:
+            return raw_line or None
+
+        etype = event.get("type")
+        if etype == "assistant":
+            for block in (event.get("message", {}) or {}).get("content", []) or []:
+                if block.get("type") == "text" and block.get("text"):
+                    text = block["text"]
+                    self.narration_parts.append(text)
+                    return text
+                if block.get("type") == "tool_use" and block.get("name") == "Bash":
+                    cmd = (block.get("input") or {}).get("command", "")
+                    self.tool_calls.append(
+                        {"tool_use_id": block.get("id"), "command": cmd, "output": None, "is_error": False}
+                    )
+                    return f"$ {cmd}"
+        elif etype == "user":
+            for block in (event.get("message", {}) or {}).get("content", []) or []:
+                if block.get("type") == "tool_result":
+                    tuid = block.get("tool_use_id")
+                    # tool_use_result.stdout is the precise, structured field;
+                    # block["content"] (a plain string in the common case) is
+                    # the fallback for tool results that don't populate it.
+                    tr = event.get("tool_use_result") or {}
+                    content = block.get("content")
+                    out_text = tr.get("stdout") or (content if isinstance(content, str) else "") or ""
+                    is_error = bool(block.get("is_error"))
+                    for call in self.tool_calls:
+                        if call["tool_use_id"] == tuid and call["output"] is None:
+                            call["output"] = out_text
+                            call["is_error"] = is_error
+                            break
+                    return out_text[:400] if out_text else None
+        elif etype == "result":
+            self.final_result = event.get("result", "")
+        return None
+
+    def skill_script_invoked(self, script_path: Path | None) -> bool:
+        """Whether any captured Bash command's text contains the skill's own
+        script path — the actual, checkable answer to "did agent.py run",
+        not the agent's word for it."""
+        if script_path is None:
+            return False
+        needle = str(script_path)
+        return any(needle in (call.get("command") or "") for call in self.tool_calls)
+
+    def build_output(self, skill_script: Path | None) -> str:
+        """The final AgentResult.output — narration first (what everything
+        already expects to find there), then an explicit VERIFIED banner,
+        then the full Bash tool-call transcript as an appendix. Flows
+        through unchanged to the consolidated report, skill_executions.output,
+        and casky-ui — no separate plumbing needed for any of those."""
+        parts: list[str] = [self.final_result or "\n".join(self.narration_parts)]
+
+        if skill_script is not None:
+            invoked = self.skill_script_invoked(skill_script)
+            parts.append(
+                f"\n[VERIFIED] Skill script executed: {'YES' if invoked else 'NO'} "
+                f"({'matched' if invoked else 'expected'}: {skill_script})"
+            )
+
+        if self.tool_calls:
+            transcript = [f"\n---\n## Tool Call Transcript ({len(self.tool_calls)} real invocation(s))"]
+            for call in self.tool_calls:
+                transcript.append(f"\n$ {call['command']}")
+                out = call.get("output") or "(no output captured)"
+                if len(out) > 2000:
+                    out = out[:2000] + "\n...[truncated]"
+                transcript.append(out)
+            parts.append("\n".join(transcript))
+
+        return "\n".join(parts)
+
+
 # ── Agent worker ──────────────────────────────────────────────────────────────
 
 class AgentWorker:
@@ -1146,6 +1259,11 @@ class AgentWorker:
             "CASKY_RUN_ID": run_id,
             "CASKY_TOKEN": token,
             "CASKY_APP_URL": report_base_url,
+            # See casky.sh's claude) branch and TranscriptAccumulator above —
+            # switches the subprocess to a parseable, verifiable event stream
+            # instead of just the agent's final narrated summary. Set only
+            # here, never by a human running 'casky run' interactively.
+            "CASKY_CAPTURE_TRANSCRIPT": "1",
         }
 
         # Pre-create the skill_executions row *before* spawning the subprocess
@@ -1208,13 +1326,31 @@ class AgentWorker:
         proc.stdin.close()
 
         assert proc.stdout is not None
+        transcript = TranscriptAccumulator()
         async for raw_line in proc.stdout:
             line = raw_line.decode(errors="replace").rstrip()
-            output_lines.append(line)
+            if not line:
+                continue
+            display = transcript.ingest_line(line)
+            if display:
+                output_lines.append(display)
 
         await proc.wait()
         exit_code = proc.returncode or 0
-        output = "\n".join(output_lines)
+        skill_script = LocalSkillsLibrary().get_executable_script(step.skill_slug)
+        output = transcript.build_output(skill_script)
+
+        # Appended to the SAME list object the live dashboard panel renders
+        # (CaskyHarness.output_buffers[idx], last 5 lines) — so the
+        # verification banner is the last thing visible in that step's
+        # panel even after it flips to DONE, not just buried in the report
+        # file. This is the actual point of this whole mechanism for a live
+        # demo: the confirmation has to be on screen, not just on disk.
+        if skill_script is not None:
+            output_lines.append(
+                f"[VERIFIED] Skill script executed: "
+                f"{'YES' if transcript.skill_script_invoked(skill_script) else 'NO'}"
+            )
 
         if config.database_url:
             try:
