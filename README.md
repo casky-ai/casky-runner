@@ -507,6 +507,18 @@ make live LIVE_TARGET=https://staging.example.com AUTHORIZED=yes SKILL=web-app  
 `make pytest` creates a local `.venv` on first run if one doesn't exist (`pytest`,
 `pytest-asyncio`, `anthropic`, `requests`, `pyyaml`, `rich`, `mcp`).
 
+**`docker compose up -d` fails with `failed to set up container networking: network <id> not
+found`?** An exited container (usually `casky-skills`, a one-shot init container — normal for it
+to be `Exited(0)`) is holding a reference to an old network ID from before the project's network
+got recreated (a `docker compose down` elsewhere, a Docker Desktop restart, manual network
+pruning). Fix:
+```bash
+./scripts/fix-stack.sh
+```
+Removes exited containers scoped strictly to this project (`com.docker.compose.project=casky-box`
+— never touches other projects' containers on the same machine) and brings the stack back up.
+Safe to run anytime; a no-op if nothing's actually stale.
+
 ---
 
 ## Project layout
