@@ -188,6 +188,12 @@ bound to localhost only. Set `CASKY_UI_HOST=0.0.0.0` to expose it beyond your ma
 RBAC, only the single admin login, so think about your network before doing that on anything but a
 trusted host.
 
+The UI is served plain HTTP — this repo has no bundled TLS termination. If you front it with your
+own TLS-terminating reverse proxy, set `CASKY_UI_FORCE_SECURE_COOKIE=true` so the session cookie is
+marked `Secure` (HTTPS-only), matching your proxy. Leave it unset for the default plain-HTTP setup —
+if you set it without actually being behind HTTPS, the browser will silently drop the cookie on
+arrival and every route will bounce straight back to `/login`, as if login never happened at all.
+
 **What's there**: `Dashboard` (investigation/finding counts) · `Investigations` (list + an 8-tab
 detail view — Overview/Evidence/Context/Plan/Execution/Findings/Remediation/Outcome-Memory, the last
 showing both related past investigations and organizational memory matches for that investigation)
@@ -327,6 +333,7 @@ mount, and evidence size limits.
 | `CASKY_UI_ADMIN_PASSWORD` | Casky UI's single-admin login. Leave unset to auto-generate one on first boot (printed once to `docker compose logs ui`) | Optional |
 | `CASKY_UI_PORT` | Host port Casky UI is reachable on | Optional, default `8766` |
 | `CASKY_UI_HOST` | Bind address for `CASKY_UI_PORT` — `0.0.0.0` to expose beyond localhost (no RBAC, think first) | Optional, default `127.0.0.1` |
+| `CASKY_UI_FORCE_SECURE_COOKIE` | Mark the UI's session cookie `Secure` — only set `true` if you've put your own TLS-terminating reverse proxy in front of Casky UI; leave unset for the default plain-HTTP setup (see "Where it's reachable" above) | Optional, default unset (not Secure) |
 | `SKILL_LAB_NAME` | Name of the running skill container (Path B, sandboxed lab) | Optional, default `skill-lab` |
 | `SKILL_LIVE_NAME` | Name of the running skill container (Path C, live/authorized target) | Optional, default `skill-live` |
 | `CASKY_APP_URL` | Platform URL override | Optional, only relevant if syncing to casky.ai |

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { generatePassword, hashPassword, verifyPassword } from "@/lib/auth";
+import { generatePassword, hashPassword, shouldUseSecureCookie, verifyPassword } from "@/lib/auth";
 
 describe("password hashing", () => {
   it("verifies a correct password against its own hash", async () => {
@@ -29,5 +29,33 @@ describe("password hashing", () => {
     const pw = generatePassword(24);
     expect(pw).toHaveLength(24);
     expect(pw).not.toMatch(/[0O1lI]/);
+  });
+});
+
+// ── shouldUseSecureCookie ─────────────────────────────────────────────────
+//
+// Live-caught: every route bounced straight back to /login even after
+// successfully logging in — "apparently we are not setting an auth cookie".
+// The server WAS calling cookieStore.set(...), but with `secure: NODE_ENV ===
+// "production"` — the Dockerfile hardcodes NODE_ENV=production unconditionally,
+// while this box's bundled docker-compose stack serves plain HTTP with no TLS
+// termination anywhere. So the cookie was always marked Secure with HTTPS
+// never actually available to satisfy it, and browsers silently drop a
+// Secure cookie set over a non-HTTPS response — indistinguishable, from the
+// operator's side, from no cookie ever being set.
+
+describe("shouldUseSecureCookie", () => {
+  it("defaults to false when CASKY_UI_FORCE_SECURE_COOKIE is unset", () => {
+    expect(shouldUseSecureCookie({})).toBe(false);
+  });
+
+  it("stays false even when NODE_ENV is production (the actual regression)", () => {
+    expect(shouldUseSecureCookie({ NODE_ENV: "production" })).toBe(false);
+  });
+
+  it("is true only when CASKY_UI_FORCE_SECURE_COOKIE is exactly 'true'", () => {
+    expect(shouldUseSecureCookie({ CASKY_UI_FORCE_SECURE_COOKIE: "true" })).toBe(true);
+    expect(shouldUseSecureCookie({ CASKY_UI_FORCE_SECURE_COOKIE: "1" })).toBe(false);
+    expect(shouldUseSecureCookie({ CASKY_UI_FORCE_SECURE_COOKIE: "yes" })).toBe(false);
   });
 });

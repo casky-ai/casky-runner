@@ -8,6 +8,7 @@ import {
   SESSION_COOKIE_NAME,
   SESSION_TTL_SECONDS,
   createSessionToken,
+  shouldUseSecureCookie,
   verifyPassword,
 } from "./auth";
 import { getSetting, setSetting, updateFindingStatus, updateFindingRemediation } from "./db";
@@ -38,7 +39,7 @@ export async function loginAction(
   const cookieStore = await cookies();
   cookieStore.set(SESSION_COOKIE_NAME, token, {
     httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
+    secure: shouldUseSecureCookie(),
     sameSite: "lax",
     path: "/",
     maxAge: SESSION_TTL_SECONDS,
