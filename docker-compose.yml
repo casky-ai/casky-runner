@@ -411,10 +411,28 @@ services:
           - target
     dns: []
 
-  # MySQL database for DVWA (only starts with lab-dvwa profile)
+  # Database for DVWA (only starts with lab-dvwa profile).
+  #
+  # MariaDB, not `mysql:latest` — live-caught two real, distinct failures
+  # while validating this lab end to end:
+  #   1. `mysql:latest` had drifted to MySQL 9.7, which broke DVWA's own
+  #      setup.php ("Create / Reset Database") with `ERROR 1305: FUNCTION
+  #      dvwa.MD5 does not exist` — reproduced directly against the live DB
+  #      (`USE dvwa; SELECT MD5('x')` fails the same way).
+  #   2. Pinning to `mysql:8.0` "fixed" #1 but hit a SECOND, unrelated
+  #      failure at the very next setup step: `ALTER TABLE users ADD COLUMN
+  #      IF NOT EXISTS role VARCHAR(20)...` — a syntax error on genuine
+  #      MySQL 8.0.46 too (confirmed directly against the live DB, not just
+  #      through DVWA). `ADD COLUMN IF NOT EXISTS` is a MariaDB extension;
+  #      Oracle MySQL has never supported it, at any version. This DVWA
+  #      image's setup.php was written against MariaDB syntax specifically —
+  #      no MySQL version/tag fixes this, only switching engines does.
+  # mariadb:11 passes both: confirmed empirically (real setup.php run to
+  # "Setup successful!", real login, real UNION-based SQLi against the live
+  # users table) before writing this comment, not assumed.
   target-db:
     profiles: [lab-dvwa]
-    image: mysql:latest
+    image: mariadb:11
     container_name: casky-target-db
     restart: unless-stopped
     environment:
@@ -428,7 +446,13 @@ services:
     networks:
       - casky-lab
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1"]
+      # mariadb-admin, not mysqladmin — the mariadb:11 image doesn't ship a
+      # mysqladmin binary/symlink at all (live-caught: the container was
+      # genuinely up and "ready for connections" per its own logs, but
+      # docker reported it permanently unhealthy because this exec target
+      # didn't exist — confirmed via `docker exec ... which mysqladmin`
+      # failing while `which mariadb-admin` succeeded).
+      test: ["CMD", "mariadb-admin", "ping", "-h", "127.0.0.1"]
       interval: 10s
       timeout: 5s
       retries: 5

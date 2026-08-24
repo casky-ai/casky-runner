@@ -100,7 +100,7 @@ prints which `SKILL_IMAGE` it used so you know) — see the full table in
 
 **Starts:** `casky-runner`, `db` (local Postgres), `skill-lab` (built from the matching
 `ghcr.io/casky-ai/skills/<category>:latest`), the target container (`casky-target`) — plus
-`target-db` (MySQL) if you picked `dvwa`, the only target with a database dependency.
+`target-db` (MariaDB) if you picked `dvwa`, the only target with a database dependency.
 
 **Only one target runs at a time** — they all share the stable hostname `target`. Switching means
 tearing down the old one first:
