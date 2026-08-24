@@ -186,6 +186,51 @@ def _as_aware_datetime(value: datetime | str | None) -> datetime | None:
     return dt
 
 
+def _run_coro_sync(coro):
+    """Runs an async coroutine to completion from synchronous code — whether
+    or not an asyncio event loop is already running on this thread.
+
+    Live-caught: harness.py's --auto mode calls extract_and_store_memories()
+    (sync) from _capture_outcome_and_extract_memory() (sync), which itself
+    runs inside _run_harness() — an async function driven by main()'s own
+    top-level asyncio.run(_run_harness(...)). A plain asyncio.run(coro) here
+    then raises "asyncio.run() cannot be called from a running event loop",
+    and extract_and_store_memories()'s own try/except swallows that into a
+    "skipped_reason", silently dropping every memory from every --auto-mode
+    run. (The manual, non---auto investigation flow's own asyncio.run() call
+    for LLM synthesis already returns before it reaches this point, so it
+    never hit this — only --auto mode did.)
+
+    The fix: detect a running loop and, only then, run the coroutine to
+    completion on a fresh event loop in a separate thread — asyncio.run() is
+    only ever called on a thread with no loop already running, so it never
+    raises for that reason. When no loop is running (the common case — most
+    callers are synchronous top-level CLI code), this is just asyncio.run()."""
+    import asyncio
+    import threading
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+
+    result: list = []
+    error: list = []
+
+    def _target() -> None:
+        try:
+            result.append(asyncio.run(coro))
+        except Exception as exc:
+            error.append(exc)
+
+    thread = threading.Thread(target=_target)
+    thread.start()
+    thread.join()
+    if error:
+        raise error[0]
+    return result[0]
+
+
 # ── Extraction + storage (dual-mode) ─────────────────────────────────────────
 
 def extract_and_store_memories(
@@ -199,15 +244,13 @@ def extract_and_store_memories(
     JSON file under memories_dir. Never raises: every failure degrades to
     {"stored": 0, "skipped_reason": ...} so a bad extraction can never break
     the CLI flow it's called from (mirrors the SaaS route's try/catch)."""
-    import asyncio
-
     investigation_id = investigation.get("id")
     outcome_summary = investigation.get("outcome_summary")
     if not investigation_id or not outcome_summary:
         return {"stored": 0, "skipped_reason": "missing investigation id or outcome_summary"}
 
     try:
-        output = asyncio.run(MemoryExtractor().run(investigation, provider))
+        output = _run_coro_sync(MemoryExtractor().run(investigation, provider))
     except Exception as exc:
         return {"stored": 0, "skipped_reason": f"{type(exc).__name__}: {exc}"}
 
