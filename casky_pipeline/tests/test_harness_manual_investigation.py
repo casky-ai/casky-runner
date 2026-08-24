@@ -48,6 +48,13 @@ def _plan(**overrides) -> "harness.Plan":
     return harness.Plan(**base)
 
 
+def _point_at_library(tmp_path: Path, monkeypatch) -> Path:
+    lib = tmp_path / "skills-library"
+    lib.mkdir()
+    monkeypatch.setattr(harness.config, "skills_library_path", lib)
+    return lib
+
+
 @pytest.fixture
 def isolated_config(monkeypatch):
     monkeypatch.setattr(harness.config, "database_url", "")
@@ -102,6 +109,61 @@ def test_capture_step_paste_handles_eof_without_end_sentinel(fake_input):
     assert skipped is False
 
 
+# ── _print_step_guidance ─────────────────────────────────────────────────────
+#
+# Live-caught by direct user confusion: the manual flow only ever printed
+# generic per-category fallback commands ("ip addr show", "netstat ...") with
+# no mention that a tested, purpose-built scripts/agent.py exists for the
+# selected skill at all — this had fallen behind casky.sh's --auto-mode
+# PROMPT text, which has said "prefer running a skill's own script over
+# improvising" since the agent.py-leverage work earlier this branch.
+
+def test_print_step_guidance_points_at_the_skills_own_script(tmp_path, monkeypatch, capsys):
+    lib = _point_at_library(tmp_path, monkeypatch)
+    scripts = lib / "skills" / "detecting-network-scanning-with-ids-signatures" / "scripts"
+    scripts.mkdir(parents=True)
+    (scripts / "agent.py").write_text("# stub\n")
+
+    harness._print_step_guidance(_step())
+
+    # Rich's Console soft-wraps long lines at terminal width, so a long
+    # absolute path can be split across lines in the captured output —
+    # check for the distinctive, short pieces rather than one exact
+    # contiguous substring.
+    out = capsys.readouterr().out
+    assert "scripts/agent.py" in out.replace("\n", "")
+    assert "preferred" in out.lower()
+
+
+def test_print_step_guidance_mentions_references_and_template_when_present(tmp_path, monkeypatch, capsys):
+    lib = _point_at_library(tmp_path, monkeypatch)
+    slug_dir = lib / "skills" / "detecting-network-scanning-with-ids-signatures"
+    (slug_dir / "scripts").mkdir(parents=True)
+    (slug_dir / "scripts" / "agent.py").write_text("# stub\n")
+    (slug_dir / "references").mkdir()
+    (slug_dir / "references" / "standards.md").write_text("# standards\n")
+    (slug_dir / "assets").mkdir()
+    (slug_dir / "assets" / "template.md").write_text("# template\n")
+
+    harness._print_step_guidance(_step())
+
+    out = capsys.readouterr().out.replace("\n", "")
+    assert "standards.md" in out
+    assert "assets/template.md" in out
+
+
+def test_print_step_guidance_falls_back_cleanly_with_no_resolvable_script(tmp_path, monkeypatch, capsys):
+    """No scripts/ directory at all for this slug — must not crash, and must
+    fall back to the same generic guidance the flow always had."""
+    _point_at_library(tmp_path, monkeypatch)
+
+    harness._print_step_guidance(_step())
+
+    out = capsys.readouterr().out
+    assert "Run in skill-lab:" in out
+    assert "preferred" not in out.lower()
+
+
 # ── _persist_step_capture ────────────────────────────────────────────────────
 
 def test_persist_step_capture_json_mode_never_touches_postgres(isolated_config, monkeypatch):
@@ -141,6 +203,36 @@ def test_persist_step_capture_postgres_mode_calls_both_store_functions(monkeypat
     assert exec_kwargs["step_id"] == "step-1"
     assert exec_kwargs["output"] == "scan detected"
     assert exec_kwargs["agent_used"] == "manual-paste"
+
+
+def test_persist_step_capture_run_id_is_a_valid_deterministic_uuid(monkeypatch):
+    """Live-caught: skill_executions.id is a Postgres UUID column. A plain
+    f"manual-{step.id}" string ("manual-9d63e2fa-...") raised "invalid input
+    syntax for type uuid" on every single manual-mode capture — always
+    falling back to a local file even with DATABASE_URL configured and
+    reachable. run_id must (a) actually be a UUID, and (b) be the SAME UUID
+    across calls for the same step.id, so record_skill_execution's own
+    ON CONFLICT (id) DO UPDATE upserts one row per step instead of
+    accumulating a duplicate on every re-save."""
+    import uuid as uuid_module
+
+    monkeypatch.setattr(harness.config, "database_url", "postgresql://casky:casky@db:5432/casky")
+    monkeypatch.setattr(db_store, "update_step_status", lambda *a, **kw: None)
+
+    seen_run_ids = []
+    monkeypatch.setattr(
+        db_store, "record_skill_execution",
+        lambda *a, **kw: seen_run_ids.append(kw["run_id"]),
+    )
+
+    step = _step(id="9d63e2fa-fc10-420b-a491-60b58edc9cde", status="captured")
+    plan = _plan(steps=[step])
+    harness._persist_step_capture(plan, step)
+    harness._persist_step_capture(plan, step)  # re-save, e.g. a later step edit
+
+    assert len(seen_run_ids) == 2
+    uuid_module.UUID(seen_run_ids[0])  # raises ValueError if not a real UUID
+    assert seen_run_ids[0] == seen_run_ids[1]
 
 
 def test_persist_step_capture_falls_back_to_local_file_on_postgres_failure(monkeypatch):
