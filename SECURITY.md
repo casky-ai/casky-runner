@@ -10,11 +10,13 @@ you don't have explicit authorization to test.
 
 By default, live tool execution (`casky run`/`make lab`) only ever touches `skill-lab`, which has
 **no internet egress** (`docker-compose.yml`'s `casky-lab` network is `internal: true`) — it can
-only reach the disposable lab target on that same isolated network. Pointing tools at a real,
-externally-reachable target is a separate, explicitly opt-in mode (`make live` / `casky run
---live-target <host|url> --i-have-authorization`, using `skill-live` instead) — see README's
-"Live, authorized real-target investigations" section. The authorization requirement above applies
-in full to that mode: only use it against infrastructure you have explicit authorization to test.
+only reach the disposable lab target on that same isolated network. Investigating a real target is a separate, explicitly opt-in mode (`make live` / `casky run
+--live-target <host|url> --i-have-authorization`) — see README's "Live, authorized real-target
+investigations" section. By default it produces a runbook (commands for a human to run themselves,
+no execution, uses `skill-lab`) rather than executing anything; `--i-have-network-access` opts into
+direct execution instead, over `skill-live`'s real egress. The authorization requirement above
+applies in full either way — advisory or direct-execution — since both name and target a specific
+real system: only use either against infrastructure you have explicit authorization to investigate.
 
 ## Supported components
 

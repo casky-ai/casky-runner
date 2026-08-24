@@ -9,8 +9,10 @@ BYO-LLM / BYO-DB configuration reference; this doc is a hands-on walkthrough.
 - `casky harness` — evidence in, an ordered MITRE-mapped investigation plan out, via the 4-stage
   classifier pipeline described in [README.md](README.md#how-a-plan-actually-gets-built)
 - `casky run <skill>` — interactive, human-in-the-loop investigation guided by your chosen coding agent
-- `casky run <skill> --live-target` — the same, but against a real, authorized target (a container,
-  URL, or API endpoint) instead of the practice lab — see Path C in step 6 below
+- `casky run <skill> --live-target` — the same, but for a real, authorized target (a container, URL,
+  API endpoint, or cloud account) instead of the practice lab — by default produces a runbook of
+  commands for you to run yourself; add `--i-have-network-access` for direct execution — see Path C
+  in step 6 below
 - Structured findings (severity, remediation, MITRE mapping), saved locally, synced to a platform
   dashboard only if you opt in
 
@@ -248,26 +250,44 @@ container, a URL, an API endpoint), that's Path C below, not this one.
 
 ### Path C — live, authorized real-target investigations (`casky run --live-target`)
 
-This uses `skill-live` instead of `skill-lab` — same tools, but with real internet/DNS egress —
-and only ever runs against infrastructure you're explicitly authorized to test (see
-[`SECURITY.md`](SECURITY.md)):
+Only ever runs against infrastructure you're explicitly authorized to investigate (see
+[`SECURITY.md`](SECURITY.md)). **By default this produces a runbook, not execution** — most real
+targets (a customer's own AWS/Azure resources especially) aren't network-reachable from this box
+at all, so the agent consults the relevant skill's own methodology and hands back the exact
+commands for *you* to run yourself, with your own credentials. This runs in the same sandboxed
+`skill-lab` Path B uses — no real egress needed:
 
 ```bash
-make live LIVE_TARGET=https://staging.example.com AUTHORIZED=yes SKILL=web-app AGENT=claude
+make live LIVE_TARGET=1234567890 AUTHORIZED=yes SKILL=cloud AGENT=claude   # e.g. an AWS account ID
+docker exec -it casky-runner casky harness -i /var/casky/evidence/runbook-results.txt   # once you've run it and saved the output
 ```
 
-Both `AUTHORIZED=yes` and authorization confirmation at the `casky run` level are required every
-time — there's no way to set this once and forget it. You'll see a `[casky] LIVE TARGET MODE`
-banner before anything runs, confirming exactly what target and mode you're in. `LIVE_TARGET` can
-be a hostname, a full URL/API endpoint, or an existing container's name (run `docker network
-connect <its-network> skill-live` first so `skill-live` can actually reach it).
+Add `NETWORK_ACCESS=yes` for direct execution instead, only when this container genuinely can
+reach the target — this switches to `skill-live` (real internet/DNS egress) and tools run for real:
 
-Without `make live`:
+```bash
+make live LIVE_TARGET=https://staging.example.com AUTHORIZED=yes SKILL=web-app AGENT=claude NETWORK_ACCESS=yes
+```
+
+`AUTHORIZED=yes` and authorization confirmation at the `casky run` level are required every time in
+either mode — there's no way to set this once and forget it. You'll see a `[casky]` banner before
+anything runs, naming which mode you're in (`LIVE TARGET MODE` for direct execution, `LIVE TARGET
+ADVISORY MODE` for a runbook). `LIVE_TARGET` can be a hostname, a full URL/API endpoint, a cloud
+account/resource identifier, or (direct-execution mode only) an existing container's name — run
+`docker network connect <its-network> skill-live` first so `skill-live` can actually reach it.
+
+Without `make live`, the advisory-mode equivalent is:
+
+```bash
+docker exec -it casky-runner casky run cloud --live-target 1234567890 --i-have-authorization
+```
+
+and the direct-execution equivalent is:
 
 ```bash
 SKILL_IMAGE=ghcr.io/casky-ai/skills/web-app:latest docker compose --profile live up -d --build skill-live
 docker exec skill-live curl -sI https://staging.example.com   # confirm reachability first
-docker exec -it casky-runner casky run web-app --live-target https://staging.example.com --i-have-authorization
+docker exec -it casky-runner casky run web-app --live-target https://staging.example.com --i-have-authorization --i-have-network-access
 ```
 
 ## 7. Browse results in Casky UI
@@ -401,17 +421,19 @@ docker exec -it casky-runner casky run network
 
 ### Scenario 7: Live, authorized real-target investigation
 
-Only against infrastructure you have explicit authorization to test — see
+Only against infrastructure you have explicit authorization to investigate — see
 [`SECURITY.md`](SECURITY.md).
 
 ```bash
-make live LIVE_TARGET=https://staging.example.com AUTHORIZED=yes SKILL=web-app AGENT=claude
+make live LIVE_TARGET=1234567890 AUTHORIZED=yes SKILL=cloud AGENT=claude   # produces a runbook — default, no execution
+make live LIVE_TARGET=https://staging.example.com AUTHORIZED=yes SKILL=web-app AGENT=claude NETWORK_ACCESS=yes   # executes for real
 ```
 
 Both `AUTHORIZED=yes` and `--i-have-authorization` (passed through automatically by `make live`)
-are required every time — omit either and it refuses to run. You'll see a `[casky] LIVE TARGET
-MODE` banner confirming the target before anything executes. `LIVE_TARGET` can also be an existing
-container's name if you first run `docker network connect <its-network> skill-live` so `skill-live`
+are required every time in either mode — omit either and it refuses to run. You'll see a `[casky]`
+banner naming the mode (`LIVE TARGET MODE` for direct execution, `LIVE TARGET ADVISORY MODE` for a
+runbook) before anything happens. `LIVE_TARGET` can also be an existing container's name (direct
+execution only) if you first run `docker network connect <its-network> skill-live` so `skill-live`
 can actually reach it.
 
 ---

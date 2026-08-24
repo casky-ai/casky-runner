@@ -99,18 +99,25 @@ lab: ## Start a lab target + matching skill-lab tools (TARGET=vulnstack|metasplo
 	echo "Starting lab-$(TARGET) — skill-lab built from $$SKILL_IMAGE"; \
 	SKILL_IMAGE=$$SKILL_IMAGE docker compose --profile lab-$(TARGET) up -d --build
 
-live: ## Run a skill against a REAL, authorized target (LIVE_TARGET=<host|url> AUTHORIZED=yes SKILL=web-app AGENT=claude)
+live: ## Investigate a REAL, authorized target (LIVE_TARGET=<host|url> AUTHORIZED=yes SKILL=web-app AGENT=claude [NETWORK_ACCESS=yes])
 	@if [ "$(AUTHORIZED)" != "yes" ] || [ -z "$(LIVE_TARGET)" ]; then \
-	  echo "Live-target mode runs real offensive security tools against a real system, with"; \
-	  echo "real internet egress (skill-live) — not the sandboxed, internet-isolated skill-lab."; \
+	  echo "Live-target mode investigates a real system. By default (no NETWORK_ACCESS) it"; \
+	  echo "produces a RUNBOOK — commands for a human to run themselves, no execution, uses"; \
+	  echo "the sandboxed skill-lab. Add NETWORK_ACCESS=yes to have this container execute"; \
+	  echo "tools directly instead, over skill-live's real internet egress."; \
 	  echo "Only use this against infrastructure you have explicit authorization to test."; \
 	  echo "See SECURITY.md and README's 'Live, authorized real-target investigations' section."; \
 	  echo ""; \
-	  echo "Usage: make live LIVE_TARGET=<host-or-url> AUTHORIZED=yes SKILL=web-app AGENT=claude"; \
+	  echo "Usage: make live LIVE_TARGET=<host-or-url> AUTHORIZED=yes SKILL=web-app AGENT=claude [NETWORK_ACCESS=yes]"; \
 	  exit 1; \
 	fi
-	SKILL_IMAGE=ghcr.io/casky-ai/skills/$(SKILL):latest docker compose --profile live up -d --build skill-live
-	docker compose exec -it runner casky run $(SKILL) --agent $(AGENT) --live-target $(LIVE_TARGET) --i-have-authorization
+	@if [ "$(NETWORK_ACCESS)" = "yes" ]; then \
+	  SKILL_IMAGE=ghcr.io/casky-ai/skills/$(SKILL):latest docker compose --profile live up -d --build skill-live; \
+	  docker compose exec -it runner casky run $(SKILL) --agent $(AGENT) --live-target $(LIVE_TARGET) --i-have-authorization --i-have-network-access; \
+	else \
+	  SKILL_IMAGE=ghcr.io/casky-ai/skills/$(SKILL):latest docker compose --profile lab up -d --build skill-lab; \
+	  docker compose exec -it runner casky run $(SKILL) --agent $(AGENT) --live-target $(LIVE_TARGET) --i-have-authorization; \
+	fi
 
 smoke: ## Fast smoke test — casky_pipeline/casky_db unit tests + casky-ui tests/typecheck/build (no Docker Postgres needed)
 	./scripts/smoke-test.sh
