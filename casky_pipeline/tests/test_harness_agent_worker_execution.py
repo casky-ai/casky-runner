@@ -149,6 +149,50 @@ def test_transcript_accumulator_extracts_bash_command_and_result():
     assert acc.final_result == "Found 3 open ports."
 
 
+def test_transcript_accumulator_handles_string_shaped_tool_use_result():
+    """Live-caught, real traceback, not a hypothetical: tool_use_result isn't
+    always {"stdout": ..., "stderr": ...} — for some tool results the CLI
+    emits it as a plain string instead. The naive tr.get("stdout") crashed
+    with AttributeError: 'str' object has no attribute 'get', taking down
+    the whole step. This looked exactly like a concurrency bug (every run
+    with 2+ steps failed, the one successful run only ever ran one step) but
+    wasn't one — any single step whose agent happened to use a tool with
+    this result shape would hit it alone; more concurrent steps just meant
+    more chances of at least one hitting it."""
+    acc = harness.TranscriptAccumulator()
+    acc.ingest_line(_assistant_tool_use("t1", "python3 /opt/skills-library/skills/x/scripts/agent.py"))
+    acc.ingest_line(json.dumps({
+        "type": "user",
+        "message": {"content": [
+            {"tool_use_id": "t1", "type": "tool_result", "content": "fallback text", "is_error": False}
+        ]},
+        "tool_use_result": "a plain string, not a dict",
+    }))
+    acc.ingest_line(_result_event("Done despite the odd shape."))
+
+    assert acc.tool_calls[0]["output"] == "a plain string, not a dict"
+    assert acc.final_result == "Done despite the odd shape."
+
+
+def test_transcript_accumulator_skips_non_dict_content_blocks():
+    """Same defensive posture as the tool_use_result fix above, applied
+    everywhere else this code assumes a dict — a content block that's
+    somehow not a dict (e.g. a bare string) must be skipped, not crash the
+    whole ingest_line() call."""
+    acc = harness.TranscriptAccumulator()
+    acc.ingest_line(json.dumps({
+        "type": "assistant",
+        "message": {"content": ["not a dict", {"type": "text", "text": "still works"}]},
+    }))
+    assert acc.narration_parts == ["still works"]
+
+
+def test_transcript_accumulator_coerces_non_string_result_to_string():
+    acc = harness.TranscriptAccumulator()
+    acc.ingest_line(json.dumps({"type": "result", "result": {"unexpected": "shape"}}))
+    assert acc.final_result == "{'unexpected': 'shape'}"
+
+
 def test_transcript_accumulator_ignores_non_bash_tool_calls():
     acc = harness.TranscriptAccumulator()
     acc.ingest_line(json.dumps({
