@@ -208,6 +208,19 @@ stdin_test_output "run gemini without key explains requirement" \
 stdin_test_pass   "run with unknown agent exits 1" \
   "test prompt" casky run web-app --agent bogus-agent
 
+# `claude --print` is piped from stdin with no TTY attached — there is no
+# channel for Claude Code's per-tool-call approval prompt to ever be
+# answered, so without --dangerously-skip-permissions every tool call
+# (including the docker exec skill-lab/skill-live the prompt itself
+# instructs) just blocks forever. Live-caught: the agent printed what it
+# needed approved and exited 0, so the harness marked the step "DONE" with
+# an empty report — not a crash, just silent non-execution. A static grep
+# against the built image's installed script is a cheap, deterministic
+# regression guard for this; actually invoking claude would need a live
+# ANTHROPIC_API_KEY (see the section-4 comment above).
+expect_pass "casky run passes --dangerously-skip-permissions to claude (no TTY for approval otherwise)" \
+  docker run --rm "$IMAGE" grep -qF -- "--dangerously-skip-permissions" /usr/local/bin/casky
+
 # ── 5. CASKY_RUN_ID + CASKY_TOKEN plumbing ───────────────────────────────────
 # Verify the report section appears in the assembled prompt when both are set.
 # We deliberately do NOT set ANTHROPIC_API_KEY so the run exits before calling

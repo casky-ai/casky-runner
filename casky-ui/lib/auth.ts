@@ -152,4 +152,32 @@ export async function verifySessionToken(token: string): Promise<boolean> {
   }
 }
 
+/**
+ * Whether the session cookie should be marked Secure (HTTPS-only).
+ *
+ * This box ships with NO TLS termination anywhere — docker-compose serves
+ * plain HTTP on CASKY_UI_HOST:CASKY_UI_PORT, no reverse proxy or cert config
+ * exists in this repo. The previous check (`NODE_ENV === "production"`) was
+ * wrong for that reality: the Dockerfile hardcodes `NODE_ENV=production`
+ * unconditionally, so the cookie was ALWAYS marked Secure with HTTPS never
+ * actually available to satisfy it. Browsers silently DROP a Secure cookie
+ * set over a plain-HTTP response — loopback origins (127.0.0.1/localhost)
+ * are a documented "secure context" exception in Chrome/Firefox, so a purely
+ * local operator hitting exactly that address might not notice, but any real
+ * LAN IP or hostname access (the normal way to reach a self-hosted box from
+ * another device) sees the cookie vanish on arrival. Every route then reads
+ * as unauthenticated and bounces straight back to /login — indistinguishable
+ * from "no cookie was ever set," which is exactly what this looked like.
+ *
+ * Defaults to false, correct for this box's actual out-of-the-box
+ * deployment. An operator who fronts casky-ui with their own
+ * TLS-terminating reverse proxy sets CASKY_UI_FORCE_SECURE_COOKIE=true to
+ * opt back in.
+ */
+export function shouldUseSecureCookie(
+  env: Record<string, string | undefined> = process.env
+): boolean {
+  return env.CASKY_UI_FORCE_SECURE_COOKIE === "true";
+}
+
 export { SESSION_TTL_SECONDS };

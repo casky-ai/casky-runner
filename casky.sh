@@ -187,11 +187,33 @@ Do NOT enter either container interactively.${REPORT_SECTION}"
     case "$AGENT" in
       claude)
         [[ -z "${ANTHROPIC_API_KEY:-}" ]] && { echo "Set ANTHROPIC_API_KEY first"; exit 1; }
-        echo "$PROMPT" | claude --print
+        # --dangerously-skip-permissions: this invocation is piped from stdin
+        # (`echo "$PROMPT" | claude --print`) with no TTY attached — there is
+        # no channel for Claude Code's normal per-tool-call approval prompt to
+        # ever be answered. Without this flag, every single tool call (the
+        # `docker exec skill-lab/skill-live ...` this exact prompt instructs
+        # the agent to run non-interactively, plus the curl that POSTs the
+        # report) blocks forever waiting for an approval that can never come —
+        # live-caught: the agent just prints what it needs approved and exits,
+        # the harness sees exit code 0 and marks the step "DONE", and the
+        # consolidated report ends up genuinely empty (no tool ever ran, so
+        # there's nothing to report — the report generator isn't broken, its
+        # input is empty). The real safety boundary here isn't per-tool
+        # approval anyway — it's the container/network isolation (skill-lab's
+        # `casky-lab` network has no internet egress) and, for a real target,
+        # the --i-have-authorization gate skill-live requires (see
+        # SECURITY.md) — both already enforced before this code ever runs.
+        echo "$PROMPT" | claude --print --dangerously-skip-permissions
         ;;
       gemini)
         [[ -z "${GOOGLE_API_KEY:-}" && -z "${GEMINI_API_KEY:-}" ]] && \
           { echo "Set GOOGLE_API_KEY first"; exit 1; }
+        # TODO: this is very likely the same no-TTY permission-wall bug fixed
+        # for the claude branch above (a piped, non-interactive invocation
+        # with no way to answer an approval prompt) — gemini CLI has its own
+        # equivalent flag (e.g. an auto-approve/yolo mode), but the exact
+        # current flag name needs to be confirmed against the installed
+        # gemini CLI version before adding it here; don't guess it blind.
         echo "$PROMPT" | gemini
         ;;
       copilot)

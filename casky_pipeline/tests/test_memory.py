@@ -18,6 +18,7 @@ import pytest
 from casky_pipeline.llm_providers import LLMProvider
 from casky_pipeline.memory import (
     MIN_RETRIEVAL_CONFIDENCE,
+    _run_coro_sync,
     decayed_confidence,
     extract_and_store_memories,
     find_relevant_memories,
@@ -82,6 +83,77 @@ def test_missing_outcome_summary_skips_without_calling_llm():
     result = extract_and_store_memories(_investigation(outcome_summary=""), provider)
     assert result["stored"] == 0
     assert "outcome_summary" in result["skipped_reason"]
+
+
+# ── _run_coro_sync / running-event-loop regression ───────────────────────────
+#
+# Live-caught: harness.py's --auto mode calls extract_and_store_memories()
+# (sync) from deep inside its own asyncio.run(_run_harness(...)) — a plain
+# nested asyncio.run() raises "cannot be called from a running event loop",
+# which extract_and_store_memories()'s try/except silently turned into a
+# skipped_reason, dropping every memory from every --auto-mode run.
+
+def test_run_coro_sync_works_with_no_loop_running():
+    async def coro():
+        return 42
+    assert _run_coro_sync(coro()) == 42
+
+
+def test_run_coro_sync_works_from_inside_a_running_event_loop():
+    import asyncio
+
+    async def inner():
+        return "ok"
+
+    async def outer():
+        # Calling _run_coro_sync from here means asyncio.get_running_loop()
+        # succeeds — exactly the --auto-mode shape this regression-guards.
+        return _run_coro_sync(inner())
+
+    assert asyncio.run(outer()) == "ok"
+
+
+def test_run_coro_sync_propagates_exceptions_with_no_loop_running():
+    async def coro():
+        raise ValueError("boom")
+    with pytest.raises(ValueError, match="boom"):
+        _run_coro_sync(coro())
+
+
+def test_run_coro_sync_propagates_exceptions_from_inside_a_running_event_loop():
+    import asyncio
+
+    async def inner():
+        raise ValueError("boom")
+
+    async def outer():
+        return _run_coro_sync(inner())
+
+    with pytest.raises(ValueError, match="boom"):
+        asyncio.run(outer())
+
+
+def test_extract_and_store_memories_works_when_called_from_a_running_event_loop(tmp_path):
+    """The actual end-to-end regression: extract_and_store_memories() called
+    the way harness.py's _run_harness() (async, top-level asyncio.run())
+    calls it — synchronously, from code that is itself already inside a
+    running loop — must succeed instead of degrading to a skipped_reason."""
+    import asyncio
+
+    async def call_from_inside_a_running_loop():
+        provider = FakeLLMProvider(_memory_response())
+        return extract_and_store_memories(_investigation(), provider, memories_dir=tmp_path)
+
+    result = asyncio.run(call_from_inside_a_running_loop())
+
+    # database_url is unset (no Postgres configured) -> JSON-file fallback is
+    # the correct, expected outcome here (same as
+    # test_postgres_unavailable_on_first_call_falls_back_to_json) — the
+    # regression this guards against is the coroutine call itself raising
+    # "asyncio.run() cannot be called from a running event loop", which
+    # extract_and_store_memories()'s own try/except turns into stored=0.
+    assert result["stored"] == 1
+    assert (tmp_path / "inv-1.json").exists()
 
 
 def test_extractor_producing_nothing_is_reported_not_an_error():
