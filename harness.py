@@ -1468,8 +1468,167 @@ class CaskyHarness:
 
 
 # ── Consolidated report generator ─────────────────────────────────────────────
+#
+# Live-caught bug (audited the night before a 27-person workshop, plan
+# bbc00d70-fe65-42a3-b7e8-d0d6f7a53da0): every step-agent is handed the same
+# shared evidence file (see casky.sh's ENV_SECTION), so a multi-step
+# investigation over one coherent incident had each of its 7 steps
+# independently narrate the *whole* incident, not just its own technique.
+# The old generate_consolidated_report() just concatenated every step's own
+# "summary" field verbatim as a separate Executive Summary bullet and every
+# step's raw findings with zero cross-step dedup — 7 near-identical
+# paragraphs, and 19 "critical" findings that were really ~5 distinct facts
+# restated in different words (two were word-for-word identical). Fixed with
+# two independent passes: _dedupe_findings() (deterministic, code-only,
+# never fails) and _synthesize_executive_summary() (one real LLM call,
+# guarded with a fallback below so a provider hiccup degrades gracefully
+# instead of crashing the report).
 
-def generate_consolidated_report(plan: Plan, results: list[Any]) -> Path:
+_FINDING_TITLE_STOPWORDS = {
+    "a", "an", "the", "and", "or", "to", "from", "via", "using", "of", "on",
+    "in", "with", "for", "by", "that", "this", "was", "were", "is", "are",
+    "be", "its", "not", "then", "which",
+}
+
+
+def _finding_title_tokens(finding: dict) -> set[str]:
+    """Title-only (not description) word set for near-duplicate clustering.
+    Empirically checked against the real 36-finding bbc00d70 report:
+    clustering on full title+description text barely reduced anything (36 ->
+    28 clusters even at a loose 0.3 Jaccard threshold), because descriptions
+    repeat the same facts padded with lots of non-overlapping specific detail
+    (different IPs, timestamps, phrasing). Titles are shorter and far more
+    consistently phrased around the same core noun-phrase, so title-only
+    tokens cluster much more effectively (36 -> 16 clusters at threshold
+    0.25) — verified against that same real report, not assumed."""
+    words = re.findall(r"[a-z0-9]+", str(finding.get("title", "")).lower())
+    return {w for w in words if w not in _FINDING_TITLE_STOPWORDS and len(w) > 2}
+
+
+def _jaccard(a: set[str], b: set[str]) -> float:
+    if not a or not b:
+        return 0.0
+    return len(a & b) / len(a | b)
+
+
+_DEDUPE_TITLE_THRESHOLD = 0.25
+
+
+def _dedupe_findings(findings: list[dict]) -> list[dict]:
+    """Collapses near-duplicate findings that independent step-agents each
+    reported for the same underlying fact. This is expected, even desirable,
+    multi-agent behavior — the same fact getting independently confirmed by
+    multiple specialized skills is corroboration, not noise — but a report
+    that lists it 5-7 times as separate findings reads as broken, not
+    thorough. Clusters by title-token Jaccard similarity (a finding joins a
+    cluster if it clears the threshold against ANY existing member, not just
+    the first — chained near-duplicates with drifting wording still merge).
+    Keeps the most detailed (longest description) finding per cluster as the
+    representative, upgrades to the cluster's highest severity (never
+    silently downgrades a real critical because a differently-worded
+    duplicate called it medium), and records corroborated_by so the report
+    can show "confirmed independently by N steps" instead of just dropping
+    the signal."""
+    sev_order = {"critical": 0, "high": 1, "medium": 2, "low": 3, "informational": 4}
+    tokens = [_finding_title_tokens(f) for f in findings]
+
+    clusters: list[list[int]] = []
+    for i in range(len(findings)):
+        placed = False
+        for cluster in clusters:
+            if any(_jaccard(tokens[i], tokens[j]) >= _DEDUPE_TITLE_THRESHOLD for j in cluster):
+                cluster.append(i)
+                placed = True
+                break
+        if not placed:
+            clusters.append([i])
+
+    deduped: list[dict] = []
+    for cluster in clusters:
+        members = [findings[i] for i in cluster]
+        representative = dict(max(
+            members,
+            key=lambda f: (len(str(f.get("description", ""))), len(str(f.get("title", "")))),
+        ))
+        representative.pop("_source_run_id", None)
+        if len(members) > 1:
+            best = min(
+                members,
+                key=lambda f: sev_order.get(str(f.get("severity", "")).lower(), 99),
+            )
+            representative["severity"] = best.get("severity", representative.get("severity"))
+            # corroborated_by counts DISTINCT steps, not raw findings — a
+            # single step reporting the same fact twice internally is not
+            # "independent confirmation." Findings with no _source_run_id
+            # tag (e.g. hand-built in tests, or callers outside
+            # generate_consolidated_report) each count as their own source,
+            # via id(), so untagged callers keep today's "one raw finding =
+            # one source" behavior.
+            distinct_sources = {m.get("_source_run_id", id(m)) for m in members}
+            if len(distinct_sources) > 1:
+                representative["corroborated_by"] = len(distinct_sources)
+        deduped.append(representative)
+    return deduped
+
+
+_REPORT_SYNTHESIS_SYSTEM_PROMPT = """You are a security investigation analyst producing the executive summary for \
+a multi-step MITRE ATT&CK investigation. You are given the investigation's deduplicated, \
+severity-sorted findings (already merged from what may have been many independent \
+step-agents converging on the same underlying facts) plus each step's own raw summary line.
+
+Multiple steps independently confirming the same fact is corroboration, not an error — \
+do not treat it as something to flag. Your job is to write ONE coherent executive summary \
+of the whole incident, not to restate every finding and not to concatenate the per-step \
+summaries verbatim.
+
+Respond with ONLY a JSON object — no prose, no markdown code fences — exactly this shape:
+{
+  "summary": "3-5 sentence executive summary for a CISO-level reader: what happened, how \
+the attacker got in, the impact, and the single most urgent remediation. No bullet list, \
+no restating every individual finding — the narrative arc only.",
+  "risk_rating": "critical|high|medium|low|informational"
+}"""
+
+
+async def _synthesize_executive_summary(
+    plan: Plan, deduped_findings: list[dict], raw_summaries: list[str]
+) -> dict:
+    """One real synthesis call over the whole investigation's (already
+    code-deduplicated — see _dedupe_findings) findings, replacing
+    generate_consolidated_report()'s old behavior of concatenating every
+    step's own "one sentence summary" verbatim as a separate bullet. Same
+    BYO-LLM provider + hardened JSON parser as _synthesize_manual_findings,
+    so a provider outage/misconfiguration fails the same documented way in
+    both places rather than inventing a second error-handling pattern.
+    Callers must guard this call themselves (see generate_consolidated_report
+    below) — this function intentionally does not swallow errors, so a
+    genuine failure is visible to its caller's fallback logic."""
+    from casky_pipeline.pipeline import _parse_json_response
+
+    findings_text = "\n".join(
+        f"- [{f.get('severity', '')}] {f.get('title', '')}"
+        + (
+            f" (confirmed independently by {f['corroborated_by']} steps)"
+            if f.get("corroborated_by", 1) > 1 else ""
+        )
+        + f" — {f.get('description', '')}"
+        for f in deduped_findings
+    ) or "(none)"
+    summaries_text = "\n".join(f"- {s}" for s in raw_summaries) or "(none provided)"
+    user_prompt = (
+        f"INVESTIGATION DOMAIN: {plan.domain}\n\n"
+        f"DEDUPLICATED FINDINGS ({len(deduped_findings)}):\n{findings_text}\n\n"
+        f"RAW PER-STEP SUMMARIES ({len(raw_summaries)}, may overlap heavily — "
+        f"synthesize, don't concatenate):\n{summaries_text}"
+    )
+    provider = build_provider_from_env()
+    raw = await provider.complete(
+        _REPORT_SYNTHESIS_SYSTEM_PROMPT, user_prompt, max_tokens=1024, cacheable_system=True
+    )
+    return _parse_json_response(raw)
+
+
+async def generate_consolidated_report(plan: Plan, results: list[Any]) -> Path:
     reports_dir = _LOCAL_REPORTS_DIR / plan.id
     reports_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1482,7 +1641,21 @@ def generate_consolidated_report(plan: Plan, results: list[Any]) -> Path:
             if report_file.exists():
                 try:
                     data = json.loads(report_file.read_text())
-                    findings_all.extend(data.get("findings", []))
+                    # Tag each finding with which step produced it — needed
+                    # so _dedupe_findings' corroborated_by counts distinct
+                    # STEPS, not raw findings. Live-caught while re-verifying
+                    # this fix against the real bbc00d70 workshop
+                    # investigation: without this tag, a single step that
+                    # happened to report the same fact 3 times internally
+                    # inflated corroborated_by exactly like a genuine
+                    # 3-step confirmation would — "confirmed independently
+                    # by 15 steps" on a 7-step investigation was flatly
+                    # impossible and would have shipped to the workshop
+                    # unnoticed without this real end-to-end check.
+                    for f in data.get("findings", []):
+                        f = dict(f)
+                        f["_source_run_id"] = r.run_id
+                        findings_all.append(f)
                     if data.get("summary"):
                         summaries.append(data["summary"])
                 except Exception:
@@ -1492,6 +1665,33 @@ def generate_consolidated_report(plan: Plan, results: list[Any]) -> Path:
     sev_order = {"critical": 0, "high": 1, "medium": 2, "low": 3, "informational": 4}
     findings_all.sort(key=lambda f: sev_order.get(str(f.get("severity", "")).lower(), 99))
 
+    # Pass 1 — deterministic, code-only dedup (see _dedupe_findings). Runs
+    # unconditionally and can never fail, so the findings table is always at
+    # least this much better even if the LLM synthesis below is unavailable.
+    deduped_findings = _dedupe_findings(findings_all)
+    deduped_findings.sort(key=lambda f: sev_order.get(str(f.get("severity", "")).lower(), 99))
+
+    # Pass 2 — one live LLM call to synthesize a single coherent executive
+    # summary from the (already deduped) findings + raw per-step summaries.
+    # Guarded: a provider outage/timeout/malformed response must not crash
+    # the whole report — falls back to the single most detailed raw summary.
+    executive_summary = ""
+    risk_rating: str | None = None
+    if summaries:
+        try:
+            synthesis = await _synthesize_executive_summary(plan, deduped_findings, summaries)
+            executive_summary = str(synthesis.get("summary", "") or "")
+            risk_rating = synthesis.get("risk_rating") or None
+        except Exception as e:
+            console.print(
+                f"[yellow]Executive summary synthesis failed ({rmarkup(str(e))}) — "
+                "falling back to the most detailed step summary.[/yellow]"
+            )
+    if not executive_summary:
+        executive_summary = max(summaries, key=len) if summaries else "No summaries provided."
+    if not risk_rating and deduped_findings:
+        risk_rating = str(deduped_findings[0].get("severity", "")) or None
+
     # Markdown report
     now = datetime.now().strftime("%Y-%m-%d %H:%M UTC")
     md_lines = [
@@ -1499,23 +1699,23 @@ def generate_consolidated_report(plan: Plan, results: list[Any]) -> Path:
         f"",
         f"**Plan ID:** {plan.id}",
         f"**Generated:** {now}",
-        f"**Steps:** {len(results)} | **Findings:** {len(findings_all)}",
+        f"**Steps:** {len(results)} | **Findings:** {len(deduped_findings)} "
+        f"({len(findings_all)} raw, deduplicated)",
         f"",
         f"## Executive Summary",
         f"",
+        executive_summary,
     ]
-    for s in summaries:
-        md_lines.append(f"- {s}")
-    if not summaries:
-        md_lines.append("No summaries provided.")
 
     md_lines += ["", "## Findings", ""]
-    if findings_all:
+    if deduped_findings:
         md_lines.append("| # | Severity | Title | Technique |")
         md_lines.append("|---|---|---|---|")
-        for i, f in enumerate(findings_all, 1):
+        for i, f in enumerate(deduped_findings, 1):
             sev = f.get("severity", "")
             title = f.get("title", f.get("description", ""))
+            if f.get("corroborated_by", 1) > 1:
+                title = f"{title} _(confirmed independently by {f['corroborated_by']} steps)_"
             tech = f.get("technique_id", "")
             md_lines.append(f"| {i} | {sev} | {title} | {tech} |")
     else:
@@ -1525,13 +1725,17 @@ def generate_consolidated_report(plan: Plan, results: list[Any]) -> Path:
     markdown_text = "\n".join(md_lines)
     report_md.write_text(markdown_text)
 
-    # JSON consolidated
+    # JSON consolidated. "summaries" (raw, pre-synthesis) is kept for
+    # backward compatibility — casky_db/json_import.py's fallback import
+    # path reads it directly; "summary" (synthesized) is the new field.
     consolidated = {
         "plan_id": plan.id,
         "domain": plan.domain,
         "generated_at": now,
         "steps_run": len(results),
-        "findings": findings_all,
+        "findings": deduped_findings,
+        "findings_raw_count": len(findings_all),
+        "summary": executive_summary,
         "summaries": summaries,
     }
     (reports_dir / "consolidated.json").write_text(json.dumps(consolidated, indent=2))
@@ -1539,14 +1743,11 @@ def generate_consolidated_report(plan: Plan, results: list[Any]) -> Path:
     # Additive Postgres persistence (Part B) — REPORT.md/consolidated.json
     # above are kept unconditionally either way; they remain useful
     # human-readable transparency artifacts regardless of DB availability.
-    # risk_rating is derived from the highest-severity finding (findings_all
-    # is already severity-sorted above) rather than invented separately.
     if config.database_url:
-        risk_rating = str(findings_all[0].get("severity", "")) if findings_all else None
         try:
             db_store.save_consolidated_report(
                 investigation_id=plan.id,
-                summary="\n".join(summaries),
+                summary=executive_summary,
                 risk_rating=risk_rating,
                 markdown=markdown_text,
                 report_json=consolidated,
@@ -1809,7 +2010,7 @@ async def _run_harness(plan: Plan, steps: list[Step]) -> None:
     # Consolidated report (local mode)
     report_path: Path | None = None
     if config.is_local_mode:
-        report_path = generate_consolidated_report(plan, harness.results)
+        report_path = await generate_consolidated_report(plan, harness.results)
 
     ui.show_summary(harness, report_path)
 
