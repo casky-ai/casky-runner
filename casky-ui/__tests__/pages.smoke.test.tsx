@@ -132,6 +132,59 @@ describe("page smoke tests", () => {
     expect(screen.getByText("example.com")).toBeInTheDocument();
   });
 
+  it("Investigation execution tab renders without crashing with 2+ executions", async () => {
+    // Regression test: pg returns TIMESTAMPTZ columns as native Date objects
+    // at runtime (not strings, despite the SkillExecution type), and the
+    // sort here must tolerate that. Needs >=2 rows since Array.sort only
+    // invokes the comparator with 2+ elements.
+    vi.mocked(db.getInvestigation).mockResolvedValue({
+      ...baseInvestigation,
+      steps: [],
+      cve_references: [],
+      findings: [],
+      skill_executions: [
+        {
+          id: "exec-2",
+          investigation_id: "inv-1",
+          step_id: null,
+          skill_slug: "second-skill",
+          agent_used: "claude",
+          model_used: "claude-opus-4-6",
+          started_at: new Date(Date.now() + 1000) as unknown as string,
+          completed_at: new Date(Date.now() + 2000) as unknown as string,
+          exit_code: 0,
+          score_pct: 90,
+          output: null,
+        },
+        {
+          id: "exec-1",
+          investigation_id: "inv-1",
+          step_id: null,
+          skill_slug: "first-skill",
+          agent_used: "claude",
+          model_used: "claude-opus-4-6",
+          started_at: new Date() as unknown as string,
+          completed_at: null,
+          exit_code: null,
+          score_pct: null,
+          output: null,
+        },
+      ],
+      consolidated_report: null,
+    });
+    const { default: InvestigationDetailPage } = await import(
+      "@/app/(app)/investigations/[id]/page"
+    );
+    render(
+      await InvestigationDetailPage({
+        params: Promise.resolve({ id: "inv-1" }),
+        searchParams: Promise.resolve({ tab: "execution" }),
+      })
+    );
+    expect(screen.getByText("first-skill")).toBeInTheDocument();
+    expect(screen.getByText("second-skill")).toBeInTheDocument();
+  });
+
   it("Findings list renders without crashing", async () => {
     const { default: FindingsPage } = await import("@/app/(app)/findings/page");
     render(await FindingsPage({ searchParams: Promise.resolve({}) }));

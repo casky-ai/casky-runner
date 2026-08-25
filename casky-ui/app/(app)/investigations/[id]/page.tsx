@@ -235,7 +235,11 @@ export default async function InvestigationDetailPage({
               <tbody>
                 {investigation.skill_executions
                   .slice()
-                  .sort((a, b) => (a.started_at || "").localeCompare(b.started_at || ""))
+                  .sort((a, b) => {
+                    const ta = a.started_at ? new Date(a.started_at).getTime() : 0;
+                    const tb = b.started_at ? new Date(b.started_at).getTime() : 0;
+                    return ta - tb;
+                  })
                   .map((exec) => (
                     <tr key={exec.id} className="border-b border-white/[0.04] align-top">
                       <td className="px-3 py-3 font-mono text-[#EAF2FF]">
