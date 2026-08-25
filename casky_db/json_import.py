@@ -133,9 +133,16 @@ def _import_reports_for_plan(
     if consolidated_file.exists():
         try:
             consolidated = json.loads(consolidated_file.read_text())
+            # Prefer the synthesized "summary" (harness.py's
+            # generate_consolidated_report() started writing this alongside
+            # the pre-existing "summaries" list — one real LLM-synthesized
+            # narrative instead of every step's raw summary concatenated).
+            # Older consolidated.json files have no "summary" key, so fall
+            # back to joining "summaries" for those.
+            summary_text = consolidated.get("summary") or "\n".join(consolidated.get("summaries", []))
             store.save_consolidated_report(
                 investigation_id=plan_id,
-                summary="\n".join(consolidated.get("summaries", [])),
+                summary=summary_text,
                 risk_rating=None,
                 markdown="",
                 report_json=consolidated,

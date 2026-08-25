@@ -120,6 +120,32 @@ def test_import_plan_and_reports(tmp_path: Path, migrated_db: str):
     assert got["consolidated_report"]["report_json"]["steps_run"] == 1
 
 
+def test_import_prefers_synthesized_summary_over_joined_raw_summaries(tmp_path: Path, migrated_db: str):
+    """harness.py's generate_consolidated_report() now writes both "summary"
+    (one LLM-synthesized narrative) and "summaries" (raw, pre-synthesis, kept
+    for backward compat) — the importer must prefer the synthesized one."""
+    plans_dir = tmp_path / "plans"
+    reports_dir = tmp_path / "reports"
+    plans_dir.mkdir()
+    reports_dir.mkdir()
+
+    plan_id = str(uuid.uuid4())
+    run_id = str(uuid.uuid4())
+    _write_plan_fixture(plans_dir, plan_id)
+    _write_report_fixture(reports_dir, plan_id, run_id)
+
+    consolidated_file = reports_dir / plan_id / "consolidated.json"
+    consolidated = json.loads(consolidated_file.read_text())
+    consolidated["summary"] = "One synthesized narrative."
+    consolidated["summaries"] = ["raw step summary one", "raw step summary two"]
+    consolidated_file.write_text(json.dumps(consolidated, indent=2))
+
+    import_json_plans(plans_dir, reports_dir, database_url=migrated_db)
+
+    got = store.get_investigation(plan_id, database_url=migrated_db)
+    assert got["consolidated_report"]["summary"] == "One synthesized narrative."
+
+
 def test_import_is_idempotent_on_existing_plans(tmp_path: Path, migrated_db: str):
     plans_dir = tmp_path / "plans"
     reports_dir = tmp_path / "reports"
