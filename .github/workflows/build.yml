@@ -8,6 +8,24 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      # Both components get a rolling :latest on every push to main, same as
+      # runner always has — added so downstream consumers (e.g. the workshops
+      # repo's casky-box/docker-compose.yml, which pulls both instead of
+      # cloning/building this repo) get an equally fresh UI image, not just a
+      # runner. release.yml still owns the separate, deliberately-manual
+      # numbered-version path for both.
+      matrix:
+        include:
+          - component: runner
+            context: .
+            dockerfile: Dockerfile
+            image: ghcr.io/casky-ai/box/runner
+          - component: ui
+            context: ./casky-ui
+            dockerfile: casky-ui/Dockerfile
+            image: ghcr.io/casky-ai/box/ui
     steps:
       - uses: actions/checkout@v4.2.2
 
@@ -25,16 +43,18 @@ jobs:
       - name: Build (load locally)
         uses: docker/build-push-action@v5
         with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
           load: true
           push: false
-          tags: casky-runner:ci
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          tags: casky-${{ matrix.component }}:ci
+          cache-from: type=gha,scope=${{ matrix.component }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.component }}
 
       - name: Trivy scan
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: casky-runner:ci
+          image-ref: casky-${{ matrix.component }}:ci
           severity: HIGH,CRITICAL
           exit-code: 1
           trivyignores: .trivyignore
@@ -45,5 +65,5 @@ jobs:
       - name: Push to GHCR
         if: github.ref == 'refs/heads/main'
         run: |
-          docker tag casky-runner:ci ghcr.io/casky-ai/box/runner:latest
-          docker push ghcr.io/casky-ai/box/runner:latest
+          docker tag casky-${{ matrix.component }}:ci ${{ matrix.image }}:latest
+          docker push ${{ matrix.image }}:latest
